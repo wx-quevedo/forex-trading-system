@@ -1,10 +1,12 @@
 <?php
 
+use App\Http\Controllers\AiAnalysisController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\MarketController;
 use App\Http\Controllers\StrategyController;
+use App\Http\Controllers\WorkbenchController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', fn () => redirect('/dashboard'));
@@ -27,6 +29,23 @@ Route::middleware('auth')->group(function () {
 
     // --- Módulo de Backtesting ---
     Route::resource('backtests', BacktestController::class)->only(['index', 'create', 'store', 'show', 'destroy']);
+
+    // --- Módulo de Análisis IA (chat sobre un backtest) ---
+    Route::get('/backtests/{backtest}/analysis', [AiAnalysisController::class, 'index'])->name('backtests.analysis');
+    Route::post('/backtests/{backtest}/analysis', [AiAnalysisController::class, 'store'])->name('backtests.analysis.store');
+    Route::post('/backtests/{backtest}/analysis/{analysis}/apply', [AiAnalysisController::class, 'apply'])->name('backtests.analysis.apply');
+
+    // --- Modo manual (Fase 6B: copy-paste, sin coste de API) ---
+    Route::get('/backtests/{backtest}/manual-prompt', [AiAnalysisController::class, 'manualPrompt'])->name('backtests.manual.prompt');
+    Route::post('/backtests/{backtest}/manual/preview', [AiAnalysisController::class, 'manualPreview'])->name('backtests.manual.preview');
+    Route::post('/backtests/{backtest}/manual/apply', [AiAnalysisController::class, 'manualApply'])->name('backtests.manual.apply');
+
+    // --- Workbench de afinamiento (Fase 6C) ---
+    Route::get('/backtests/{backtest}/workbench', [WorkbenchController::class, 'show'])->name('backtests.workbench');
+    Route::post('/backtests/ephemeral', [WorkbenchController::class, 'ephemeral'])->name('backtests.ephemeral');
+    Route::post('/backtests/{backtest}/workbench/manual-prompt', [WorkbenchController::class, 'manualPrompt'])->name('workbench.manual-prompt');
+    Route::post('/backtests/{backtest}/workbench/analyze', [WorkbenchController::class, 'analyze'])->name('workbench.analyze');
+    Route::post('/strategies/{strategy}/save-version-from-workbench', [WorkbenchController::class, 'saveVersion'])->name('workbench.save-version');
 
     // Endpoints JSON para el frontend (refresco de charts / precios / posiciones).
     Route::prefix('api')->group(function () {

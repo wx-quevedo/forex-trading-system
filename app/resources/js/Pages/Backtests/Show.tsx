@@ -83,9 +83,27 @@ export default function Show({ backtest, candles }: { backtest: Backtest; candle
                         {backtest.date_from.slice(0, 10)} → {backtest.date_to.slice(0, 10)}
                     </p>
                 </div>
-                <Link href="/backtests" className="text-sm text-text-secondary hover:text-text-primary">
-                    ← Backtests
-                </Link>
+                <div className="flex items-center gap-2">
+                    {backtest.status === 'completed' && (
+                        <>
+                            <Link
+                                href={`/backtests/${backtest.id}/workbench`}
+                                className="rounded-md border border-accent bg-accent/10 px-3 py-1.5 text-sm font-semibold text-accent hover:bg-accent/20"
+                            >
+                                Abrir workbench
+                            </Link>
+                            <Link
+                                href={`/backtests/${backtest.id}/analysis`}
+                                className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+                            >
+                                Analizar con IA
+                            </Link>
+                        </>
+                    )}
+                    <Link href="/backtests" className="text-sm text-text-secondary hover:text-text-primary">
+                        ← Backtests
+                    </Link>
+                </div>
             </div>
 
             {(backtest.status === 'pending' || backtest.status === 'running') && (

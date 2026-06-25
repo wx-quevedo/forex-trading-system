@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Ruta absoluta al .env (raíz del bridge), para que se cargue sin importar el CWD
+# desde el que se arranque (p.ej. el subproceso de --reload de uvicorn).
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_PATH),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -21,8 +27,10 @@ class Settings(BaseSettings):
     # Seguridad
     bridge_api_key: str = ""
 
-    # Servidor
-    bridge_host: str = "0.0.0.0"
+    # Servidor. Default SEGURO 127.0.0.1: el bridge ejecuta órdenes reales y nunca
+    # debe exponerse a la red (ver FOREXBOT_RED_LOCAL.md). Solo Laravel lo consume
+    # desde la misma máquina.
+    bridge_host: str = "127.0.0.1"
     bridge_port: int = 8000
 
     allowed_origins: str = "*"

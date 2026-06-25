@@ -193,3 +193,35 @@ export interface Backtest {
     created_at: string;
     strategy?: Strategy;
 }
+
+// --- Análisis IA (Módulo 4 / Fase 6 + 6B) ---
+export interface AiAnalysis {
+    id: number;
+    backtest_id: number;
+    prompt: string;
+    response: string | null;
+    model: string | null;
+    mode: 'api' | 'manual';
+    input_tokens: number | null;
+    output_tokens: number | null;
+    estimated_cost_usd: string | number | null;
+    suggested_parameters: Record<string, number | string> | null;
+    applied: boolean;
+    resulting_strategy_id: number | null;
+    created_at: string;
+}
+
+export interface DiffRow {
+    key: string;
+    group: 'indicadores' | 'riesgo';
+    old: number | string | null;
+    new: number | string | null;
+    changed: boolean;
+}
+
+// --- Workbench (Fase 6C) ---
+export interface WorkbenchRun {
+    metrics: BacktestMetrics | null;
+    trades: BacktestTrade[];
+    equity: EquityPoint[];
+}

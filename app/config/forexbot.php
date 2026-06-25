@@ -26,6 +26,10 @@ return [
     'anthropic' => [
         'api_key' => env('ANTHROPIC_API_KEY', ''),
         'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+        // Precio USD por 1M de tokens (para estimar el coste del modo API).
+        // claude-sonnet-4-6: $3 input / $15 output.
+        'price_input_per_mtok' => (float) env('ANTHROPIC_PRICE_INPUT', 3.0),
+        'price_output_per_mtok' => (float) env('ANTHROPIC_PRICE_OUTPUT', 15.0),
     ],
 
 ];

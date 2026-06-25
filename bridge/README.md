@@ -49,11 +49,14 @@ Genera una API key fuerte:
 
 ## 4. Arranque
 
+> ⚠ El bridge ejecuta órdenes de trading reales: enlaza **solo a `127.0.0.1`**, nunca
+> a `0.0.0.0`. Solo Laravel (en la misma máquina) debe consumirlo. Ver `FOREXBOT_RED_LOCAL.md`.
+
 ```bash
-# opción A
-./venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-# opción B
+# opción A (recomendada: usa BRIDGE_HOST=127.0.0.1 del .env)
 ./venv/Scripts/python.exe run.py
+# opción B
+./venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 - Documentación interactiva (Swagger): http://localhost:8000/docs

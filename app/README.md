@@ -33,6 +33,38 @@ php artisan serve --port=8080  # el bridge suele usar el 8000
 - email: `admin@forexbot.local`  ·  password: `password`
 - Configurable vía `.env`: `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`.
 
+### Acceso desde la red local (iPhone / Mac / iPad) — ver `FOREXBOT_RED_LOCAL.md`
+
+Comandos de uso diario (3 procesos en la tower):
+
+```bash
+# 1. Bridge MT5 — SOLO localhost (ejecuta órdenes reales; nunca expuesto a la red)
+cd bridge && ./venv/Scripts/python.exe run.py            # enlaza 127.0.0.1:8000
+
+# 2. Reverb (WebSockets) — escucha en todas las interfaces
+cd app && php artisan reverb:start                       # 0.0.0.0:8085
+
+# 3. Laravel — escucha en todas las interfaces
+cd app && php artisan serve --host=0.0.0.0 --port=8090
+```
+
+Desde otro dispositivo en la **misma WiFi**: `http://192.168.0.172:8090` (IP de la tower;
+es DHCP, verifícala con `ipconfig` si cambia). `echo.js` deriva el host del WebSocket de
+`window.location.hostname`, así que el tiempo real funciona igual desde `localhost` (en la
+tower) y desde la IP (desde el iPhone) **sin recompilar**.
+
+**Firewall (primera vez):** al escuchar en `0.0.0.0`, Windows Defender mostrará un popup
+para PHP → **Permitir en redes privadas** (no públicas). Si no aparece, abrir los puertos
+como administrador (NO el 8000):
+
+```powershell
+New-NetFirewallRule -DisplayName "ForexBot Laravel" -Direction Inbound -LocalPort 8090 -Protocol TCP -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "ForexBot Reverb"  -Direction Inbound -LocalPort 8085 -Protocol TCP -Action Allow -Profile Private
+```
+
+> Seguridad: el bridge (8000) queda en `127.0.0.1` — verificado que `192.168.0.172:8000`
+> rechaza la conexión desde la red, mientras `127.0.0.1:8000` (Laravel) sí responde.
+
 ## 3. Base de datos por entorno
 
 - **local** → SQLite (`database/database.sqlite`, `DB_CONNECTION=sqlite`).
@@ -103,7 +135,72 @@ php artisan bridge:broadcast-positions --watch   # sondea el bridge y emite por 
 - ✅ **Fase 3** — Frontend: Dashboard + charts + posiciones en tiempo real
 - ✅ **Fase 4** — Módulo de Estrategias: CRUD + versionado + formulario dinámico + motor Python + evaluación manual
 - ✅ **Fase 5** — Motor de Backtesting: engine pandas + Job async + métricas + equity/PnL (Recharts) + chart con marcadores
-- ⏭ **Fase 6** — Análisis IA (Anthropic)
+- ✅ **Fase 6** — Análisis IA (Anthropic): chat sobre el backtest + sugerencias → nueva versión de estrategia
+- ⏭ **Fase 7** — Bot en Vivo
+
+## 11. Análisis IA (Fase 6)
+
+Chat con Claude sobre un backtest completado en `/backtests/{id}/analysis` (botón
+"Analizar con IA" en la vista del backtest). Usa el **SDK oficial `anthropic-ai/sdk`**
+(`App\Services\ClaudeService`) contra la Messages API:
+
+- Modelo configurable en `config/forexbot.php` (`ANTHROPIC_MODEL`, por defecto `claude-sonnet-4-6`).
+- El contexto del backtest (estrategia, parámetros, métricas, muestra de trades) va en
+  `system` con **prompt caching**; los turnos del chat en `messages`. Adaptive thinking activado.
+- Claude puede devolver un bloque ```json con `suggested_parameters`; el botón
+  **"Aplicar como nueva versión"** crea una versión nueva de la estrategia con esos
+  parámetros (mismo versionado de la Fase 4). Cada intercambio se guarda en `ai_analyses`.
+
+Requiere la clave en el `.env` del backend:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_PRICE_INPUT=3.0    # USD/1M tokens (para estimar coste)
+ANTHROPIC_PRICE_OUTPUT=15.0
+```
+
+> Nota: el SDK no aplica su `timeout` al cliente PSR-18, y el análisis puede tardar
+> >30s. El controlador usa `set_time_limit(180)` y `ClaudeService` fija un transporter
+> Guzzle con `timeout: 180`. En Windows hace falta un CA bundle en `php.ini`
+> (`curl.cainfo`/`openssl.cafile`) para las llamadas HTTPS salientes.
+
+## 12. Modo manual de afinamiento (Fase 6B — copy-paste, sin coste de API)
+
+Segundo modo en la vista de análisis, elegible con un **selector** (persistido en
+`localStorage`, por defecto **Manual**):
+
+- **Paso 1** — "Generar prompt": la plataforma arma un bloque de texto con la estrategia,
+  sus parámetros, el **esquema de parámetros válidos** (`STRATEGY_SCHEMAS` del bridge) y
+  las métricas del backtest. El usuario lo copia y lo pega en su **Claude.ai**.
+- **Paso 2** — el usuario pega la respuesta JSON de Claude. El backend la **valida**
+  robustamente (`App\Services\ManualTuningService`): extracción tolerante a ruido,
+  parámetros del mismo tipo de estrategia, rangos del esquema, y límites de riesgo
+  (`risk_percent ≤ 5`, sl/tp > 0). Muestra un **diff** antes/después y, al confirmar,
+  crea una **nueva versión** de la estrategia (sin coste de API).
+
+**Tracking de coste:** cada análisis por API guarda `input_tokens`/`output_tokens` y
+`estimated_cost_usd`; el modo manual guarda coste `0`. La vista muestra el **coste API
+acumulado del mes**. Endpoints: `GET /backtests/{id}/manual-prompt`,
+`POST /backtests/{id}/manual/preview`, `POST /backtests/{id}/manual/apply`.
+
+## 13. Workbench de afinamiento (Fase 6C — vista unificada)
+
+`/backtests/{id}/workbench` (botón "Abrir workbench" en la vista del backtest) unifica
+**estrategia + backtest + IA** en una pantalla para iterar sin cambiar de pestaña:
+
+- **Panel de parámetros (sticky)** editable en vivo (formulario dinámico por tipo + riesgo + periodo).
+- **Re-correr backtest** → corrida **efímera** síncrona contra el bridge
+  (`POST /backtests/ephemeral`) que **NO persiste** nada (feedback inmediato, sin cola).
+- **Comparación de 3 corridas** (`Components/RunComparison.tsx`): Inicial · Anterior · Actual,
+  con flechas ▲/▼ por métrica (drawdown invertido correctamente) + "Fijar Actual como Inicial".
+- **Equity curve** con overlay opcional de la corrida Anterior; chart de velas con marcadores
+  de trades; tabla de trades con filtros.
+- **Panel IA** (Manual/API, reutiliza Fase 6/6B): su botón **"Aplicar al panel"** rellena los
+  campos editables (con un **highlight** azul) en lugar de crear una versión.
+- **"Guardar como nueva versión"** (header): crea la versión con los parámetros del panel
+  (`POST /strategies/{id}/save-version-from-workbench`) y, opcionalmente, persiste la corrida
+  Actual como un `backtest` real ligado a la nueva versión.
 
 ## 10. Módulo de Backtesting (Fase 5)
 
