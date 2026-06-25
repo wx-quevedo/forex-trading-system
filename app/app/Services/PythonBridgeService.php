@@ -83,6 +83,11 @@ class PythonBridgeService
         return $this->request('GET', '/symbols', $group ? ['query' => ['group' => $group]] : []);
     }
 
+    public function symbolInfo(string $symbol): array
+    {
+        return $this->request('GET', '/symbol/' . rawurlencode($symbol));
+    }
+
     /**
      * Nombres de símbolos operables del broker (excluye las ~1300 acciones para
      * un selector usable): Forex, derivados, cripto e índices. Cacheado 1 hora.

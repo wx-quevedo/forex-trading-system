@@ -91,7 +91,7 @@ class BotService
             $currentOpen[] = $ticket;
             if ($ticket && ! in_array($ticket, $seenOpen, true)) {
                 $dir = ($p['type'] ?? 0) === 0 ? 'BUY' : 'SELL';
-                $this->telegram->notify('trade_opened', "🟢 Trade abierto: {$dir} {$p['symbol']} {$p['volume']} lotes @ {$p['price_open']}");
+                $this->telegram->notify('trade_opened', "Trade abierto: {$dir} {$p['symbol']} {$p['volume']} lotes @ {$p['price_open']}");
             }
         }
         Cache::forever($seenOpenKey, $currentOpen);
@@ -123,8 +123,7 @@ class BotService
             if (! in_array($ticket, $seenClosed, true)) {
                 $seenClosed[] = $ticket;
                 $pnl = (float) ($t['pnl'] ?? 0);
-                $emoji = $pnl >= 0 ? '✅' : '🔻';
-                $this->telegram->notify('trade_closed', "{$emoji} Trade cerrado: {$t['symbol']} PnL " . number_format($pnl, 2));
+                $this->telegram->notify('trade_closed', "Trade cerrado: {$t['symbol']} PnL " . number_format($pnl, 2));
             }
         }
         Cache::forever($seenClosedKey, $seenClosed);
@@ -147,9 +146,9 @@ class BotService
         if ($botStatus !== $prevStatus) {
             $reason = $status['stop_reason'] ?? '';
             if ($botStatus === 'stopped' && str_contains($reason, 'pérdida diaria')) {
-                $this->telegram->notify('daily_limit', "⛔ Bot auto-detenido: {$reason}");
+                $this->telegram->notify('daily_limit', "Bot auto-detenido: {$reason}");
             } elseif ($botStatus === 'error') {
-                $this->telegram->notify('error', '🚨 Error crítico del bot: ' . ($status['error'] ?? 'desconocido'));
+                $this->telegram->notify('error', 'Error crítico del bot: ' . ($status['error'] ?? 'desconocido'));
             }
             Cache::forever($lastStatusKey, $botStatus);
         }

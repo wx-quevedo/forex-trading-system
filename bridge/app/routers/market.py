@@ -30,6 +30,11 @@ async def get_candles(
     return client.candles(symbol, timeframe, date_from, date_to, count)
 
 
+@router.get("/symbol/{symbol}", summary="symbol_info() — info del símbolo (digits, etc.)")
+async def get_symbol(symbol: str):
+    return client.symbol_info(symbol)
+
+
 @router.get("/positions", summary="positions_get() — posiciones abiertas")
 async def get_positions(symbol: str | None = Query(default=None)):
     return client.positions(symbol)

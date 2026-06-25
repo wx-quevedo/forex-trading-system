@@ -180,6 +180,23 @@ class MT5Client:
             for s in syms
         ]
 
+    def symbol_info(self, symbol: str) -> dict[str, Any]:
+        """Info de un símbolo (incluye `digits`, precisión de precio del par)."""
+        self.ensure_connected()
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            raise MT5Error(f"Símbolo desconocido: '{symbol}'.", code=404, mt5_error=mt5.last_error())
+        return {
+            "name": info.name,
+            "description": info.description,
+            "path": info.path,
+            "digits": int(info.digits),
+            "point": float(info.point),
+            "spread": int(info.spread),
+            "trade_mode": int(info.trade_mode),
+            "visible": bool(info.visible),
+        }
+
     def _ensure_symbol(self, symbol: str) -> None:
         info = mt5.symbol_info(symbol)
         if info is None:

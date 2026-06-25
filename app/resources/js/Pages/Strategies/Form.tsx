@@ -1,6 +1,7 @@
 import { Head, useForm, Link } from '@inertiajs/react';
 import { useMemo, type FormEvent } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
+import SymbolCombobox from '@/Components/SymbolCombobox';
 import type { SchemaField, Strategy, StrategySchemas } from '@/types';
 
 interface Props {
@@ -96,18 +97,12 @@ export default function Form({ strategy, schemas, timeframes, symbols }: Props) 
 
                     <div className="grid grid-cols-2 gap-3">
                         <Field label="Par" error={errors.pair}>
-                            <input
-                                list="symbol-options"
+                            <SymbolCombobox
                                 value={data.pair}
-                                onChange={(e) => setData('pair', e.target.value.toUpperCase())}
+                                symbols={symbols}
+                                onChange={(s) => setData('pair', s)}
                                 placeholder="EURUSD"
-                                className="input font-mono"
                             />
-                            <datalist id="symbol-options">
-                                {symbols.map((s) => (
-                                    <option key={s} value={s} />
-                                ))}
-                            </datalist>
                         </Field>
                         <Field label="Timeframe" error={errors.timeframe}>
                             <select

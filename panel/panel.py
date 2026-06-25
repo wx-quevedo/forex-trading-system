@@ -328,8 +328,8 @@ class App:
 
         root.title("ForexBot Control Panel")
         root.configure(bg=BG)
-        root.geometry("580x680")
-        root.minsize(540, 640)
+        root.geometry("640x680")
+        root.minsize(600, 640)
 
         self.svc_dots: dict[str, Dot] = {}
         self.svc_btns: dict[str, dict[str, tk.Button]] = {}
@@ -357,7 +357,7 @@ class App:
         if not PHP:
             warn = tk.Label(
                 self.root,
-                text="⚠ PHP no encontrado: Laravel/Reverb/Worker no podrán iniciarse.",
+                text="Aviso: PHP no encontrado: Laravel/Reverb/Worker no podrán iniciarse.",
                 bg=BG, fg=YELLOW, font=FONT_SMALL,
             )
             warn.pack(fill="x", padx=18)
@@ -381,12 +381,12 @@ class App:
         gframe = tk.Frame(self.root, bg=BG)
         gframe.pack(fill="x", padx=18, pady=(0, 8))
         tk.Button(
-            gframe, text="▶  INICIAR TODO", command=lambda: self._async(self.start_all),
+            gframe, text="INICIAR TODO", command=lambda: self._async(self.start_all),
             bg=GREEN, fg="#06231F", activebackground=GREEN, font=FONT_LABEL_B,
             relief="flat", padx=10, pady=8, cursor="hand2",
         ).pack(side="left", expand=True, fill="x", padx=(0, 6))
         tk.Button(
-            gframe, text="■  DETENER TODO", command=lambda: self._async(self.stop_all),
+            gframe, text="DETENER TODO", command=lambda: self._async(self.stop_all),
             bg=PANEL2, fg=RED, activebackground=PANEL2, font=FONT_LABEL_B,
             relief="flat", padx=10, pady=8, cursor="hand2",
         ).pack(side="left", expand=True, fill="x", padx=(6, 0))
@@ -421,9 +421,9 @@ class App:
         tk.Label(row, text=port_txt, bg=PANEL, fg=MUTED, font=FONT_MONO, width=7, anchor="w").pack(side="left")
 
         btns = {}
-        for sym, name, action in (("▶", "start", self.mgr.start), ("■", "stop", self.mgr.stop), ("↻", "restart", self.mgr.restart)):
+        for label, name in (("Start", "start"), ("Stop", "stop"), ("Restart", "restart")):
             b = tk.Button(
-                row, text=sym, width=3, bg=PANEL2, fg=TEXT, activebackground=BORDER,
+                row, text=label, width=7, bg=PANEL2, fg=TEXT, activebackground=BORDER,
                 relief="flat", font=FONT_LABEL, cursor="hand2",
                 command=lambda k=key, n=name: self._do_action(k, n),
             )
@@ -575,7 +575,7 @@ class App:
     def _activity(self, msg: str, ok: bool) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.config(state="normal")
-        self.log.insert("end", f"[{ts}] {'' if ok else '⚠ '}{msg}\n")
+        self.log.insert("end", f"[{ts}] {'' if ok else '! '}{msg}\n")
         self.log.see("end")
         self.log.config(state="disabled")
 

@@ -38,7 +38,7 @@ pip install -r requirements.txt
 python panel.py
 ```
 
-- **Start/Stop/Restart** por servicio con los botones `▶ ■ ↻`.
+- **Start/Stop/Restart** por servicio con sus botones.
 - **INICIAR TODO** los levanta en orden (Bridge → Laravel → Reverb → Worker);
   **DETENER TODO** en orden inverso.
 - El estado se refresca solo cada ~2,5 s (semáforo verde/rojo/gris/amarillo).

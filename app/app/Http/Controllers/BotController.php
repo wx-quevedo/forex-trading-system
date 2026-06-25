@@ -96,24 +96,24 @@ class BotController extends Controller
             return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
         }
 
-        $this->telegram->notify('started', "▶️ Bot iniciado: {$strategy->name} ({$strategy->pair} {$data['timeframe']}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2));
+        $this->telegram->notify('started', "Bot iniciado: {$strategy->name} ({$strategy->pair} {$data['timeframe']}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2));
 
         return response()->json(['status' => $status]);
     }
 
     public function pause(): JsonResponse
     {
-        return $this->control_action('botPause', 'paused', '⏸️ Bot pausado.');
+        return $this->control_action('botPause', 'paused', 'Bot pausado.');
     }
 
     public function resume(): JsonResponse
     {
-        return $this->control_action('botResume', 'resumed', '▶️ Bot reanudado.');
+        return $this->control_action('botResume', 'resumed', 'Bot reanudado.');
     }
 
     public function stop(): JsonResponse
     {
-        return $this->control_action('botStop', 'stopped', '⏹️ Bot detenido.', stoppedRun: true);
+        return $this->control_action('botStop', 'stopped', 'Bot detenido.', stoppedRun: true);
     }
 
     /** PANIC: cierra TODAS las posiciones y detiene el bot. */
@@ -126,7 +126,7 @@ class BotController extends Controller
         }
         $this->markRunStopped();
         $closed = $result['panic']['count'] ?? 0;
-        $this->telegram->notify('panic', "🚨 PANIC activado: {$closed} posiciones cerradas y bot detenido.");
+        $this->telegram->notify('panic', "PANIC activado: {$closed} posiciones cerradas y bot detenido.");
 
         return response()->json($result);
     }

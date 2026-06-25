@@ -1,8 +1,11 @@
 import { Head } from '@inertiajs/react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
-import { fmtMoney, fmtPrice, pnlColor } from '@/lib/format';
-import type { BotClosedTrade, BotPosition, BotSignal, BotStatus, Strategy, TelegramSettings } from '@/types';
+import BotLiveChart from '@/Components/BotLiveChart';
+import BotDecisionPanel from '@/Components/BotDecisionPanel';
+import LiveClock from '@/Components/LiveClock';
+import { fmtMoney, fmtPrice, fmtTimeMs, pnlColor } from '@/lib/format';
+import type { BotClosedTrade, BotPosition, BotSignal, BotStatus, Candle, Strategy, TelegramSettings } from '@/types';
 
 interface Props {
     strategies: Pick<Strategy, 'id' | 'name' | 'pair' | 'timeframe' | 'parameters' | 'version'>[];
@@ -11,7 +14,7 @@ interface Props {
     recentTrades: BotClosedTrade[];
 }
 
-const TIMEFRAMES = ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
+const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 
 const STATUS_META: Record<string, { label: string; dot: string; pulse: boolean }> = {
     running: { label: 'Activo', dot: 'bg-profit', pulse: true },
@@ -32,10 +35,70 @@ export default function Control({ strategies, status: initialStatus, telegram: i
     const [maxPositions, setMaxPositions] = useState(1);
     const [timeframe, setTimeframe] = useState('');
 
+    const [view, setView] = useState<'chart' | 'log'>('chart');
+    const [candles, setCandles] = useState<Candle[]>([]);
+    const [digits, setDigits] = useState(5);
+    const [selectedSignal, setSelectedSignal] = useState<BotSignal | null>(null);
+
     const running = status.status === 'running';
     const paused = status.status === 'paused';
     const active = running || paused;
     const selected = strategies.find((s) => s.id === strategyId);
+
+    // Qué dibuja el chart: si el bot opera, el símbolo/estrategia REAL resuelto;
+    // si está detenido, la estrategia seleccionada en el formulario.
+    const chart = useMemo(() => {
+        if (active && status.strategy) {
+            return {
+                symbol: status.strategy.symbol,
+                timeframe: status.strategy.timeframe,
+                type: status.strategy.type,
+                params: (status.strategy.params ?? {}) as Record<string, number | string>,
+            };
+        }
+        const p = selected?.parameters;
+        return {
+            symbol: selected?.pair ?? 'EURUSD',
+            timeframe: timeframe || selected?.timeframe || 'H1',
+            type: p?.type ?? 'ma_cross',
+            params: (p?.indicators ?? {}) as Record<string, number | string>,
+        };
+    }, [active, status.strategy, selected, timeframe]);
+
+    // Carga inicial + refresco de velas (las nuevas velas entran al chart).
+    const fetchCandles = useRef<() => void>(() => {});
+    fetchCandles.current = async () => {
+        try {
+            const { data } = await window.axios.get(`/api/market/candles/${encodeURIComponent(chart.symbol)}`, {
+                params: { timeframe: chart.timeframe, count: 300 },
+            });
+            if (data.data) setCandles(data.data as Candle[]);
+        } catch {
+            /* el bridge puede caer; se reintenta */
+        }
+    };
+    useEffect(() => {
+        setCandles([]);
+        fetchCandles.current();
+        const id = window.setInterval(() => fetchCandles.current(), 15000);
+        return () => window.clearInterval(id);
+    }, [chart.symbol, chart.timeframe]);
+
+    // Precisión de precio del símbolo (digits) para formatear el chart correctamente.
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const { data } = await window.axios.get(`/api/market/symbol/${encodeURIComponent(chart.symbol)}`);
+                if (alive && data.data?.digits) setDigits(Number(data.data.digits));
+            } catch {
+                /* default 5 */
+            }
+        })();
+        return () => {
+            alive = false;
+        };
+    }, [chart.symbol]);
 
     // Polling del estado en vivo (también sincroniza la BD + Telegram en el backend).
     const poll = useRef<() => void>(() => {});
@@ -100,14 +163,17 @@ export default function Control({ strategies, status: initialStatus, telegram: i
                         {status.error && <div className="text-xs text-loss">{status.error}</div>}
                     </div>
                 </div>
-                <button
-                    type="button"
-                    onClick={panic}
-                    disabled={busy}
-                    className="rounded-md bg-loss px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:opacity-90 disabled:opacity-50"
-                >
-                    🚨 PANIC — Cerrar todo
-                </button>
+                <div className="flex items-center gap-4">
+                    <LiveClock />
+                    <button
+                        type="button"
+                        onClick={panic}
+                        disabled={busy}
+                        className="rounded-md bg-loss px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:opacity-90 disabled:opacity-50"
+                    >
+                        PANIC — Cerrar todo
+                    </button>
+                </div>
             </div>
 
             {error && <div className="mb-4 rounded-lg border border-loss/40 bg-loss/10 px-4 py-2 text-sm text-loss">{error}</div>}
@@ -157,22 +223,22 @@ export default function Control({ strategies, status: initialStatus, telegram: i
                         <div className="mt-4 flex flex-wrap gap-2">
                             {!active && (
                                 <button type="button" onClick={start} disabled={busy || !strategyId} className="flex-1 rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">
-                                    ▶ Start
+                                    Start
                                 </button>
                             )}
                             {running && (
                                 <button type="button" onClick={() => action('/bot/pause')} disabled={busy} className="flex-1 rounded-md bg-warning px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">
-                                    ⏸ Pause
+                                    Pause
                                 </button>
                             )}
                             {paused && (
                                 <button type="button" onClick={() => action('/bot/resume')} disabled={busy} className="flex-1 rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">
-                                    ▶ Resume
+                                    Resume
                                 </button>
                             )}
                             {active && (
                                 <button type="button" onClick={() => action('/bot/stop')} disabled={busy} className="flex-1 rounded-md border border-border px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-bg-elevated disabled:opacity-50">
-                                    ⏹ Stop
+                                    Stop
                                 </button>
                             )}
                         </div>
@@ -197,11 +263,64 @@ export default function Control({ strategies, status: initialStatus, telegram: i
                     <TelegramPanel telegram={telegram} setTelegram={setTelegram} />
                 </div>
 
-                {/* Columna derecha: posiciones, señales, historial */}
+                {/* Columna derecha: visualización (chart) o log de texto */}
                 <div className="space-y-6 lg:col-span-2">
-                    <Positions positions={status.positions ?? []} maxPositions={cfg?.max_positions} />
-                    <SignalLogLive signals={status.signals ?? []} />
-                    <ClosedTrades trades={status.closed_trades?.length ? status.closed_trades : recentTrades} />
+                    <div className="flex gap-1 rounded-lg border border-border bg-bg-surface p-1">
+                        {(['chart', 'log'] as const).map((v) => (
+                            <button
+                                key={v}
+                                type="button"
+                                onClick={() => setView(v)}
+                                className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                                    view === v ? 'bg-bg-elevated text-text-primary' : 'text-text-secondary hover:text-text-primary'
+                                }`}
+                            >
+                                {v === 'chart' ? 'Visualización' : 'Log de señales'}
+                            </button>
+                        ))}
+                    </div>
+
+                    {view === 'chart' ? (
+                        <>
+                            <section className="rounded-lg border border-border bg-bg-surface p-2">
+                                <div className="mb-1 flex items-center justify-between px-2 pt-1">
+                                    <h2 className="text-sm font-semibold">
+                                        {chart.symbol} · {chart.timeframe} · {chart.type}
+                                    </h2>
+                                    <span className="font-mono text-[10px] text-text-secondary">{candles.length} velas</span>
+                                </div>
+                                {candles.length === 0 ? (
+                                    <p className="p-10 text-center text-sm text-text-secondary">Cargando velas…</p>
+                                ) : (
+                                    <BotLiveChart
+                                        candles={candles}
+                                        digits={digits}
+                                        strategyType={chart.type}
+                                        params={chart.params}
+                                        signals={status.signals ?? []}
+                                        positions={status.positions ?? []}
+                                        closedTrades={status.closed_trades ?? []}
+                                        onSelectSignal={setSelectedSignal}
+                                    />
+                                )}
+                            </section>
+                            <BotDecisionPanel
+                                signal={selectedSignal}
+                                strategyType={chart.type}
+                                params={chart.params}
+                                lot={cfg?.lot ?? lot}
+                                digits={digits}
+                                onClose={() => setSelectedSignal(null)}
+                            />
+                            <Positions positions={status.positions ?? []} maxPositions={cfg?.max_positions} />
+                        </>
+                    ) : (
+                        <>
+                            <Positions positions={status.positions ?? []} maxPositions={cfg?.max_positions} />
+                            <SignalLogLive signals={status.signals ?? []} />
+                            <ClosedTrades trades={status.closed_trades?.length ? status.closed_trades : recentTrades} />
+                        </>
+                    )}
                 </div>
             </div>
         </AppLayout>
@@ -270,7 +389,7 @@ function SignalLogLive({ signals }: { signals: BotSignal[] }) {
                             {signals.map((s) => (
                                 <tr key={s.seq} className="border-b border-border/40 last:border-0">
                                     <td className="px-3 py-1.5 font-mono text-xs text-text-secondary">
-                                        {new Date(s.evaluated_at).toLocaleTimeString('en-GB')}
+                                        {fmtTimeMs(s.evaluated_at)}
                                     </td>
                                     <td className="px-3 py-1.5">
                                         <span className={`font-mono text-xs font-semibold ${s.signal_type === 'buy' ? 'text-profit' : s.signal_type === 'sell' ? 'text-loss' : 'text-text-secondary'}`}>
@@ -304,6 +423,7 @@ function ClosedTrades({ trades }: { trades: BotClosedTrade[] }) {
                     <table className="w-full text-sm">
                         <thead className="sticky top-0 bg-bg-surface">
                             <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
+                                <th className="px-3 py-2 font-medium">Cierre</th>
                                 <th className="px-3 py-2 font-medium">Símbolo</th>
                                 <th className="px-3 py-2 font-medium">Dir</th>
                                 <th className="px-3 py-2 font-medium text-right">Vol</th>
@@ -314,6 +434,7 @@ function ClosedTrades({ trades }: { trades: BotClosedTrade[] }) {
                         <tbody>
                             {trades.map((t) => (
                                 <tr key={t.ticket} className="border-b border-border/40 last:border-0">
+                                    <td className="px-3 py-1.5 font-mono text-[11px] text-text-secondary">{t.close_at ? fmtTimeMs(t.close_at) : '—'}</td>
                                     <td className="px-3 py-1.5 font-mono text-xs text-text-primary">{t.symbol}</td>
                                     <td className="px-3 py-1.5 font-mono text-xs text-text-secondary">{t.direction ?? '—'}</td>
                                     <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{t.volume ?? '—'}</td>

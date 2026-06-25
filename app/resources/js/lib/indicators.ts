@@ -18,6 +18,56 @@ function ema(values: number[], period: number): number[] {
 }
 
 /**
+ * Media móvil (SMA o EMA) sobre el cierre, alineada al tiempo de cada vela.
+ * Refleja las fórmulas del bridge (EMA recursiva seed=primer valor; SMA rolling).
+ */
+export function movingAverage(candles: Candle[], period: number, type: 'sma' | 'ema' = 'ema'): LinePoint[] {
+    if (candles.length < period || period < 1) return [];
+    const closes = candles.map((c) => c.close);
+
+    if (type === 'ema') {
+        const e = ema(closes, period);
+        return candles.map((c, i) => ({ time: c.time, value: e[i] })).slice(period - 1);
+    }
+
+    const out: LinePoint[] = [];
+    let sum = 0;
+    for (let i = 0; i < closes.length; i++) {
+        sum += closes[i];
+        if (i >= period) sum -= closes[i - period];
+        if (i >= period - 1) out.push({ time: candles[i].time, value: sum / period });
+    }
+    return out;
+}
+
+export interface BollingerResult {
+    upper: LinePoint[];
+    middle: LinePoint[];
+    lower: LinePoint[];
+}
+
+/** Bandas de Bollinger (media SMA + k desviaciones estándar muestrales, ddof=1). */
+export function bollinger(candles: Candle[], period = 20, stdDev = 2): BollingerResult {
+    const upper: LinePoint[] = [];
+    const middle: LinePoint[] = [];
+    const lower: LinePoint[] = [];
+    if (candles.length < period) return { upper, middle, lower };
+    const closes = candles.map((c) => c.close);
+
+    for (let i = period - 1; i < closes.length; i++) {
+        const slice = closes.slice(i - period + 1, i + 1);
+        const mean = slice.reduce((a, b) => a + b, 0) / period;
+        const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / (period - 1);
+        const sd = Math.sqrt(variance);
+        const time = candles[i].time;
+        middle.push({ time, value: mean });
+        upper.push({ time, value: mean + stdDev * sd });
+        lower.push({ time, value: mean - stdDev * sd });
+    }
+    return { upper, middle, lower };
+}
+
+/**
  * RSI de Wilder. Devuelve puntos desde la vela `period` en adelante.
  */
 export function rsi(candles: Candle[], period = 14): LinePoint[] {

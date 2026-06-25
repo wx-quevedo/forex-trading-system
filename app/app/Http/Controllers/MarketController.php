@@ -34,6 +34,11 @@ class MarketController extends Controller
         return $this->safe(fn () => $this->bridge->price(strtoupper($symbol)));
     }
 
+    public function symbol(string $symbol): JsonResponse
+    {
+        return $this->safe(fn () => $this->bridge->symbolInfo(strtoupper($symbol)));
+    }
+
     public function positions(): JsonResponse
     {
         return $this->safe(fn () => $this->bridge->positions());

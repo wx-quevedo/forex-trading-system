@@ -226,7 +226,7 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
                             disabled={running}
                             className="mt-5 w-full rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
                         >
-                            {running ? 'Corriendo…' : '▶ Re-correr backtest'}
+                            {running ? 'Corriendo…' : 'Re-correr backtest'}
                         </button>
                         {runError && <p className="mt-2 text-xs text-loss">{runError}</p>}
                         {timeframes.length === 0 && null}

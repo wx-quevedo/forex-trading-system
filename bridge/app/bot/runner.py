@@ -44,6 +44,8 @@ class BotRunner:
             s.day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
             s.realized_pnl_today = 0.0
             s.last_candle_time = None
+            s.signals = []  # log limpio para la nueva sesión
+            s.closed_trades = []
             s.error = None
             s.stop_reason = None
             s.started_at = datetime.now(tz=timezone.utc).isoformat()
@@ -230,7 +232,7 @@ class BotRunner:
                     executed = False
                     exec_reason = why
 
-        bot_state.add_signal(bot_state.symbol, signal, executed, exec_reason, indicators)
+        bot_state.add_signal(bot_state.symbol, signal, executed, exec_reason, indicators, candle_time=ctime)
 
 
 bot_runner = BotRunner()

@@ -102,12 +102,16 @@ class BotState:
             self.realized_pnl_today = 0.0
             self.closed_trades = []
 
-    def add_signal(self, symbol: str, signal: str, executed: bool, reason: str, indicators: dict[str, Any]) -> dict[str, Any]:
+    def add_signal(
+        self, symbol: str, signal: str, executed: bool, reason: str,
+        indicators: dict[str, Any], candle_time: int | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             self._seq += 1
             entry = {
                 "seq": self._seq,
                 "evaluated_at": _now_iso(),
+                "candle_time": candle_time,  # tiempo de la vela cerrada evaluada (para el chart)
                 "symbol": symbol,
                 "signal_type": signal,
                 "executed": executed,

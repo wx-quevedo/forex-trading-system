@@ -237,11 +237,13 @@ export interface BotPosition {
     sl: number;
     tp: number;
     profit: number;
+    time?: number; // epoch (s) de apertura
 }
 
 export interface BotSignal {
     seq: number;
     evaluated_at: string;
+    candle_time?: number | null;
     symbol: string;
     signal_type: 'buy' | 'sell' | 'none';
     executed: boolean;
@@ -256,8 +258,11 @@ export interface BotClosedTrade {
     volume: number | null;
     open_price: number | null;
     close_price: number | null;
+    sl?: number | null;
+    tp?: number | null;
     pnl: number;
     exit_reason?: string;
+    open_at?: string;
     close_at?: string;
 }
 

@@ -4,7 +4,7 @@ Ejecuta una estrategia automáticamente contra MT5: evalúa en cada vela cerrada
 abre/cierra posiciones reales con lote fijo, respeta límites de seguridad y se
 controla desde Laravel (start/pause/resume/stop/panic).
 
-⚠ Opera SIEMPRE en cuenta demo hasta validación extensa. El panic button cierra
+Opera SIEMPRE en cuenta demo hasta validación extensa. El panic button cierra
 TODAS las posiciones abiertas y detiene el bot.
 """
 
