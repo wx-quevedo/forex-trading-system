@@ -121,4 +121,34 @@ class PythonBridgeService
     {
         return $this->request('DELETE', "/position/{$ticket}");
     }
+
+    // --- Motor de estrategias (Módulo 2) ---------------------------------
+    /** Tipos de estrategia disponibles y sus parámetros configurables. */
+    public function strategyTypes(): array
+    {
+        return $this->request('GET', '/strategy/types');
+    }
+
+    /**
+     * Evalúa una estrategia sobre los datos actuales de MT5.
+     *
+     * @param  array<string, mixed>  $params  Parámetros del indicador.
+     */
+    public function evaluateStrategy(
+        string $type,
+        array $params,
+        string $symbol,
+        string $timeframe = 'H1',
+        int $count = 300,
+    ): array {
+        return $this->request('POST', '/strategy/evaluate', [
+            'json' => [
+                'type' => $type,
+                'params' => (object) $params,
+                'symbol' => $symbol,
+                'timeframe' => $timeframe,
+                'count' => $count,
+            ],
+        ]);
+    }
 }

@@ -77,4 +77,63 @@ export interface SignalLogEntry {
     signal_type: 'buy' | 'sell' | 'none';
     executed: boolean;
     reason: string | null;
+    indicator_values?: Record<string, number | null>;
+}
+
+// --- Estrategias (Módulo 2) ---
+export interface StrategyRisk {
+    sl_pips?: number | null;
+    tp_pips?: number | null;
+    risk_percent?: number | null;
+}
+
+export interface StrategyParameters {
+    type: string;
+    indicators: Record<string, number | string>;
+    risk: StrategyRisk;
+}
+
+export interface Strategy {
+    id: number;
+    name: string;
+    description: string | null;
+    pair: string;
+    timeframe: string;
+    parameters: StrategyParameters;
+    version: number;
+    parent_id: number | null;
+    is_active: boolean;
+    created_at: string;
+    versions_count?: number;
+}
+
+export interface SchemaField {
+    name: string;
+    label: string;
+    type: 'number' | 'select';
+    default: number | string;
+    min?: number;
+    max?: number;
+    step?: number;
+    options?: { value: string; label: string }[];
+}
+
+export interface StrategySchema {
+    label: string;
+    description: string;
+    fields: SchemaField[];
+}
+
+export type StrategySchemas = Record<string, StrategySchema>;
+
+export interface EvaluateResult {
+    signal: 'buy' | 'sell' | 'none';
+    reason: string;
+    indicators: Record<string, number | null>;
+    price: number | null;
+    time: number | null;
+    type: string;
+    symbol: string;
+    timeframe: string;
+    candles_evaluated: number;
 }

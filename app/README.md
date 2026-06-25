@@ -101,4 +101,21 @@ php artisan bridge:broadcast-positions --watch   # sondea el bridge y emite por 
 - ✅ **Fase 1** — Bridge Python MT5 (carpeta `../bridge`)
 - ✅ **Fase 2** — Backend Laravel: modelos/migraciones, `PythonBridgeService`, auth básica, Reverb + Echo
 - ✅ **Fase 3** — Frontend: Dashboard + charts + posiciones en tiempo real
-- ⏭ **Fase 4** — Módulo de Estrategias (CRUD + motor Python)
+- ✅ **Fase 4** — Módulo de Estrategias: CRUD + versionado + formulario dinámico + motor Python + evaluación manual
+- ⏭ **Fase 5** — Motor de Backtesting
+
+## 9. Módulo de Estrategias (Fase 4)
+
+CRUD completo en `/strategies` con **formulario dinámico**: el tipo de estrategia
+(`ma_cross`, `rsi`, `macd`, `bollinger`, `combined`) define qué parámetros se
+renderizan, leídos del bridge (`GET /strategy/types`). Versionado: cada ajuste puede
+guardarse como **nueva versión** (hijo con `parent_id` a la raíz, `version` incremental).
+
+**Evaluación manual de señal** (botón en la página de la estrategia): llama al motor
+Python (`POST /strategy/evaluate`) con los parámetros y el par/timeframe, evalúa sobre
+los datos actuales de MT5 y registra una entrada en `signal_logs`.
+
+- `App\Http\Controllers\StrategyController` · `App\Http\Requests\StrategyRequest`
+- `PythonBridgeService::strategyTypes()` / `evaluateStrategy()`
+- Frontend: `Pages/Strategies/{Index,Form,Show}.tsx`
+- Motor Python: `bridge/app/strategy/` (indicadores pandas + estrategias + registry)

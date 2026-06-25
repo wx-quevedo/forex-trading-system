@@ -90,6 +90,21 @@ por query string: `ws://host:8000/stream/EURUSD?api_key=<KEY>`.
 | POST | `/order` | `order_send()` | Ejecutar orden de mercado |
 | DELETE | `/position/{ticket}` | `order_send()` (cierre) | Cerrar posición |
 | WS | `/stream/{symbol}` | polling de ticks | Stream de precios en vivo |
+| GET | `/strategy/types` | motor de estrategias | Tipos y parámetros configurables |
+| POST | `/strategy/evaluate` | motor de estrategias | Evalúa una estrategia sobre datos actuales |
+
+### Motor de estrategias (Módulo 2 / Fase 4)
+
+`app/strategy/` calcula indicadores con pandas (SMA, EMA, RSI, MACD, Bollinger) y
+evalúa señales de entrada/salida sobre la última vela. Tipos: `ma_cross`, `rsi`,
+`macd`, `bollinger`, `combined`. Cada tipo expone su schema de parámetros vía
+`/strategy/types` para alimentar el formulario dinámico del frontend.
+
+```bash
+curl -X POST http://localhost:8000/strategy/evaluate -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"ma_cross","params":{"ma_type":"ema","fast_period":9,"slow_period":21},"symbol":"EURUSD","timeframe":"H1"}'
+```
 
 ### Parámetros de `/candles/{symbol}`
 
