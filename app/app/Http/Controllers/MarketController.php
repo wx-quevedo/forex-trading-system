@@ -21,12 +21,20 @@ class MarketController extends Controller
         $validated = $request->validate([
             'timeframe' => ['nullable', 'string'],
             'count' => ['nullable', 'integer', 'min:1', 'max:5000'],
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date'],
         ]);
 
-        return $this->safe(fn () => $this->bridge->candles(strtoupper($symbol), [
-            'timeframe' => strtoupper($validated['timeframe'] ?? 'H1'),
-            'count' => $validated['count'] ?? 300,
-        ]));
+        $query = ['timeframe' => strtoupper($validated['timeframe'] ?? 'H1')];
+        if (! empty($validated['from'])) {
+            // Ventana temporal explícita (p.ej. detalle de un trade).
+            $query['from'] = \Illuminate\Support\Carbon::parse($validated['from'])->toIso8601String();
+            $query['to'] = \Illuminate\Support\Carbon::parse($validated['to'] ?? 'now')->toIso8601String();
+        } else {
+            $query['count'] = $validated['count'] ?? 300;
+        }
+
+        return $this->safe(fn () => $this->bridge->candles(strtoupper($symbol), $query));
     }
 
     public function price(string $symbol): JsonResponse

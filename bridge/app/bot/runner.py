@@ -76,11 +76,30 @@ class BotRunner:
 
     def panic(self) -> dict[str, Any]:
         """Cierra TODAS las posiciones y detiene el bot. Prioridad de seguridad."""
+        open_before = dict(bot_state.open_tickets)
         result = executor.close_all(client)
+        # Registrar como cerrados por PANIC los trades que el bot tenía abiertos.
+        for ticket, rec in open_before.items():
+            info = None
+            try:
+                info = client.closed_position_pnl(ticket)
+            except Exception:  # noqa: BLE001
+                pass
+            bot_state.record_closed_trade(
+                {
+                    "ticket": ticket, "symbol": rec.get("symbol", bot_state.symbol),
+                    "direction": rec.get("direction"), "volume": rec.get("volume"),
+                    "open_price": rec.get("open_price"), "close_price": (info or {}).get("close_price"),
+                    "sl": rec.get("sl"), "tp": rec.get("tp"), "open_at": rec.get("open_at"),
+                    "close_at": datetime.now(tz=timezone.utc).isoformat(),
+                    "pnl": (info or {}).get("pnl", 0.0), "close_reason": "panic",
+                }
+            )
         with bot_state.lock():
             bot_state.status = "stopped"
             bot_state.stop_reason = "PANIC: todas las posiciones cerradas."
             bot_state.open_tickets = {}
+            bot_state.pending_reasons = {}
         bot_state.save()
         self._stop.set()
         return result
@@ -144,7 +163,7 @@ class BotRunner:
         return floating, bot_state.realized_pnl_today + floating
 
     def _reconcile_closed(self) -> None:
-        """Detecta posiciones del bot cerradas por SL/TP y registra el trade."""
+        """Detecta posiciones del bot cerradas y registra el trade con su motivo."""
         current = {int(p["ticket"]): p for p in executor.bot_positions(client)}
         for ticket in list(bot_state.open_tickets):
             if ticket in current:
@@ -155,6 +174,9 @@ class BotRunner:
                 info = client.closed_position_pnl(ticket)
             except Exception:  # noqa: BLE001
                 pass
+            close_price = (info or {}).get("close_price")
+            forced = bot_state.pending_reasons.pop(ticket, None)
+            reason = forced or _infer_close_reason(rec, close_price)
             bot_state.record_closed_trade(
                 {
                     "ticket": ticket,
@@ -162,13 +184,15 @@ class BotRunner:
                     "direction": rec.get("direction"),
                     "volume": rec.get("volume"),
                     "open_price": rec.get("open_price"),
-                    "close_price": (info or {}).get("close_price"),
+                    "close_price": close_price,
                     "sl": rec.get("sl"),
                     "tp": rec.get("tp"),
                     "open_at": rec.get("open_at"),
                     "close_at": datetime.now(tz=timezone.utc).isoformat(),
                     "pnl": (info or {}).get("pnl", 0.0),
-                    "exit_reason": "sl_tp",
+                    "close_reason": reason,
+                    "open_reason": rec.get("open_reason"),
+                    "open_indicators": rec.get("open_indicators"),
                 }
             )
 
@@ -196,9 +220,10 @@ class BotRunner:
                 ptype = "buy" if p["type"] == 0 else "sell"
                 if ptype != signal:
                     try:
+                        bot_state.pending_reasons[int(p["ticket"])] = "signal"
                         client.close_position(int(p["ticket"]))
                     except Exception:  # noqa: BLE001
-                        pass
+                        bot_state.pending_reasons.pop(int(p["ticket"]), None)
 
             same_symbol = executor.bot_positions(client, bot_state.symbol)
             total_open = len(executor.bot_positions(client))
@@ -222,6 +247,8 @@ class BotRunner:
                                 "sl": res.get("sl"),
                                 "tp": res.get("tp"),
                                 "open_at": datetime.now(tz=timezone.utc).isoformat(),
+                                "open_reason": reason,  # por qué entró (Parte B)
+                                "open_indicators": indicators,
                             }
                         executed = True
                         exec_reason = reason
@@ -233,6 +260,21 @@ class BotRunner:
                     exec_reason = why
 
         bot_state.add_signal(bot_state.symbol, signal, executed, exec_reason, indicators, candle_time=ctime)
+
+
+def _infer_close_reason(rec: dict[str, Any], close_price: float | None) -> str:
+    """Deduce el motivo de cierre comparando el precio de cierre con SL/TP."""
+    sl = rec.get("sl")
+    tp = rec.get("tp")
+    if close_price is None:
+        return "manual"
+    pip = executor.pip_size(rec.get("symbol", "EURUSD"))
+    tol = 5 * pip  # tolerancia por slippage
+    if tp and abs(close_price - float(tp)) <= tol:
+        return "take_profit"
+    if sl and abs(close_price - float(sl)) <= tol:
+        return "stop_loss"
+    return "manual"
 
 
 bot_runner = BotRunner()

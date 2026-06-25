@@ -30,6 +30,8 @@ interface Props {
     closedTrades: BotClosedTrade[];
     onSelectSignal: (s: BotSignal | null) => void;
     height?: number;
+    focus?: { from: number; to: number }; // zoom inicial a una operación (Parte B)
+    showClosedZones?: boolean; // dibujar zonas TP/SL de los trades cerrados
 }
 
 const C = {
@@ -74,7 +76,7 @@ interface Bundle {
  * entrada prominente en la vela de ejecución (desde la posición/trade real),
  * zonas TP/SL estilo TradingView, tooltip con detalle de la orden.
  */
-export default function BotLiveChart({ candles, digits = 5, strategyType, params, signals, positions, closedTrades, onSelectSignal, height = 480 }: Props) {
+export default function BotLiveChart({ candles, digits = 5, strategyType, params, signals, positions, closedTrades, onSelectSignal, height = 480, focus, showClosedZones }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const tooltipRef = useRef<HTMLDivElement>(null);
     const b = useRef<Bundle | null>(null);
@@ -243,9 +245,13 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             osc.volume.setData(candles.map((c) => ({ time: t(c.time), value: c.tick_volume, color: c.close >= c.open ? `${C.up}80` : `${C.down}80` })));
         }
 
-        if (wasFirst) bundle.chart.timeScale().fitContent();
-        else if (follow.current) bundle.chart.timeScale().scrollToRealTime();
-    }, [candles, strategyType, params]);
+        if (wasFirst) {
+            if (focus) bundle.chart.timeScale().setVisibleRange({ from: focus.from as Time, to: focus.to as Time });
+            else bundle.chart.timeScale().fitContent();
+        } else if (follow.current && !focus) {
+            bundle.chart.timeScale().scrollToRealTime();
+        }
+    }, [candles, strategyType, params]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // --- Efecto C: marcadores (evaluaciones + entradas/salidas reales) ---
     useEffect(() => {
@@ -311,6 +317,14 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
 
         const firstTime = candles[0]?.time ?? 0;
         const zones: PositionZone[] = positions.map((p) => ({ from: p.time ?? firstTime, to: null, entry: p.price_open, tp: p.tp || null, sl: p.sl || null }));
+        if (showClosedZones) {
+            for (const tr of closedTrades) {
+                if (tr.open_price == null) continue;
+                const from = tr.open_at ? Math.floor(new Date(tr.open_at).getTime() / 1000) : firstTime;
+                const to = tr.close_at ? Math.floor(new Date(tr.close_at).getTime() / 1000) : null;
+                zones.push({ from, to, entry: tr.open_price, tp: tr.tp ?? null, sl: tr.sl ?? null });
+            }
+        }
         bundle.zones.setZones(zones);
 
         for (const p of positions) {
@@ -318,7 +332,7 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             if (p.sl) bundle.priceLines.push(bundle.candle.createPriceLine({ price: p.sl, color: C.down, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'SL' }));
             bundle.priceLines.push(bundle.candle.createPriceLine({ price: p.price_open, color: C.text, lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: 'Entry' }));
         }
-    }, [positions, candles, strategyType]);
+    }, [positions, candles, strategyType, closedTrades, showClosedZones]);
 
     return (
         <div className="relative">

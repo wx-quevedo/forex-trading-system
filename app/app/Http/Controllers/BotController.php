@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BotEvent;
 use App\Models\BotRun;
 use App\Models\Strategy;
 use App\Models\Trade;
@@ -32,13 +33,17 @@ class BotController extends Controller
             'status' => $this->bot->status(),
             'telegram' => $this->telegram->settings(),
             'recentTrades' => Trade::whereNotNull('bot_run_id')->latest('close_at')->limit(50)->get(),
+            'journal' => $this->journal(null),
         ]);
     }
 
     /** Estado en vivo (polling): sincroniza a la BD + emite Reverb + notifica. */
     public function status(): JsonResponse
     {
-        return response()->json($this->bot->syncAndStatus());
+        $status = $this->bot->syncAndStatus();
+        $status['journal'] = $this->journal($status['bot_run_id'] ?? null);
+
+        return response()->json($status);
     }
 
     /** Estado ligero (solo lectura) para el indicador del header; bridge caído = 'stopped'. */
@@ -96,7 +101,9 @@ class BotController extends Controller
             return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
         }
 
-        $this->telegram->notify('started', "Bot iniciado: {$strategy->name} ({$strategy->pair} {$data['timeframe']}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2));
+        $msg = "Bot iniciado: {$strategy->name} ({$strategy->pair} {$data['timeframe']}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2);
+        $this->telegram->notify('started', $msg);
+        $this->bot->logEvent($run->id, 'started', 'info', $msg);
 
         return response()->json(['status' => $status]);
     }
@@ -124,9 +131,11 @@ class BotController extends Controller
         } catch (Throwable $e) {
             return response()->json(['error' => 'Error en PANIC: ' . $e->getMessage()], 502);
         }
+        $runId = $this->latestRunId();
         $this->markRunStopped();
         $closed = $result['panic']['count'] ?? 0;
         $this->telegram->notify('panic', "PANIC activado: {$closed} posiciones cerradas y bot detenido.");
+        $this->bot->logEvent($runId, 'panic', 'warning', "PANIC: {$closed} posiciones cerradas y bot detenido.");
 
         return response()->json($result);
     }
@@ -150,6 +159,7 @@ class BotController extends Controller
         } catch (Throwable $e) {
             return response()->json(['error' => $e->getMessage()], 502);
         }
+        $this->bot->logEvent($this->latestRunId(), $event, 'info', $message);
         if ($stoppedRun) {
             $this->markRunStopped();
         }
@@ -164,5 +174,19 @@ class BotController extends Controller
             ->latest('id')
             ->first()
             ?->update(['status' => 'stopped', 'stopped_at' => now()]);
+    }
+
+    private function latestRunId(): ?int
+    {
+        return BotRun::latest('id')->value('id');
+    }
+
+    /** Journal del bot (eventos del run, o los más recientes si no hay run). */
+    private function journal(?int $runId): \Illuminate\Support\Collection
+    {
+        return BotEvent::when($runId, fn ($q) => $q->where('bot_run_id', $runId))
+            ->latest('occurred_at')
+            ->limit(100)
+            ->get(['id', 'type', 'severity', 'message', 'occurred_at']);
     }
 }

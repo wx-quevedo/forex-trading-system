@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .config import settings
 from .mt5_client import MT5Error, client
-from .routers import account, backtest, bot, market, stream, strategy, trading
+from .routers import account, backtest, bot, market, optimize, strategy, stream, trading
 
 
 @asynccontextmanager
@@ -78,6 +78,7 @@ app.include_router(trading.router, tags=["trading"])
 app.include_router(strategy.router, tags=["strategy"])
 app.include_router(backtest.router, tags=["backtest"])
 app.include_router(bot.router, tags=["bot"])
+app.include_router(optimize.router, tags=["optimize"])
 app.include_router(stream.router, tags=["stream"])
 
 

@@ -244,4 +244,14 @@ class PythonBridgeService
     {
         return $this->request('GET', '/bot/status');
     }
+
+    // --- Optimización automática (Fase 8A) -------------------------------
+    /** @param array<string, mixed> $params @param array<string, mixed> $risk */
+    public function optimize(string $type, array $params, string $symbol, string $timeframe, string $from, string $to, array $risk = [], float $split = 0.7): array
+    {
+        return $this->request('POST', '/optimize', ['json' => [
+            'type' => $type, 'params' => $params, 'symbol' => $symbol, 'timeframe' => $timeframe,
+            'from' => $from, 'to' => $to, 'risk' => $risk, 'split' => $split,
+        ]], timeout: 300); // el barrido corre decenas de backtests.
+    }
 }

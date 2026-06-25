@@ -261,9 +261,13 @@ export interface BotClosedTrade {
     sl?: number | null;
     tp?: number | null;
     pnl: number;
+    close_reason?: string | null;
     exit_reason?: string;
     open_at?: string;
     close_at?: string;
+    open_reason?: string | null;
+    open_indicators?: Record<string, number | null> | null;
+    signal_data?: { open_reason?: string | null; open_indicators?: Record<string, number | null> | null } | null;
 }
 
 export interface BotStatus {
@@ -288,4 +292,40 @@ export interface TelegramSettings {
     configured: boolean;
     enabled: boolean;
     events: Record<string, boolean>;
+}
+
+// --- Optimización automática (Fase 8A) ---
+export interface OptimizationResult {
+    params: Record<string, number | string>;
+    in_return: number;
+    out_return: number;
+    in_trades: number;
+    out_trades: number;
+    total_trades: number;
+    robustness: number;
+    stars: number;
+    verdict: 'inside' | 'edge' | 'outside';
+    verdict_label: string;
+    profit_factor_out: number | null;
+    max_dd_out: number;
+}
+
+export interface Optimization {
+    strategy_type: string;
+    symbol: string;
+    timeframe: string;
+    min_trades: number;
+    in_sample: { candles: number; from: number | null; to: number | null };
+    out_sample: { candles: number; from: number | null; to: number | null };
+    combinations: number;
+    results: OptimizationResult[];
+}
+
+// --- Journal del bot (Fase 8D) ---
+export interface BotEvent {
+    id: number;
+    type: string;
+    severity: 'info' | 'warning' | 'error';
+    message: string;
+    occurred_at: string;
 }

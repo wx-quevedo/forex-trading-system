@@ -44,6 +44,7 @@ Route::middleware('auth')->group(function () {
     // --- Workbench de afinamiento (Fase 6C) ---
     Route::get('/backtests/{backtest}/workbench', [WorkbenchController::class, 'show'])->name('backtests.workbench');
     Route::post('/backtests/ephemeral', [WorkbenchController::class, 'ephemeral'])->name('backtests.ephemeral');
+    Route::post('/backtests/optimize', [WorkbenchController::class, 'optimize'])->name('backtests.optimize');
     Route::post('/backtests/{backtest}/workbench/manual-prompt', [WorkbenchController::class, 'manualPrompt'])->name('workbench.manual-prompt');
     Route::post('/backtests/{backtest}/workbench/analyze', [WorkbenchController::class, 'analyze'])->name('workbench.analyze');
     Route::post('/strategies/{strategy}/save-version-from-workbench', [WorkbenchController::class, 'saveVersion'])->name('workbench.save-version');

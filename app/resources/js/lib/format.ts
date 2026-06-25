@@ -52,6 +52,36 @@ export function fmtDateTimeMs(iso: string | number | Date): string {
     );
 }
 
+const CLOSE_REASONS: Record<string, string> = {
+    take_profit: 'Take Profit',
+    stop_loss: 'Stop Loss',
+    signal: 'Señal contraria',
+    panic: 'Panic',
+    manual: 'Manual',
+    daily_limit: 'Límite diario',
+};
+
+export function closeReasonLabel(reason: string | null | undefined): string {
+    if (!reason) return '—';
+    return CLOSE_REASONS[reason] ?? reason;
+}
+
+/** Duración legible entre dos timestamps ISO (ej: "2h 15m", "45m", "1d 3h"). */
+export function fmtDuration(open?: string | null, close?: string | null): string {
+    if (!open || !close) return '—';
+    const ms = new Date(close).getTime() - new Date(open).getTime();
+    if (Number.isNaN(ms) || ms < 0) return '—';
+    const s = Math.floor(ms / 1000);
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (d) return `${d}d ${h}h`;
+    if (h) return `${h}h ${m}m`;
+    if (m) return `${m}m ${sec}s`;
+    return `${sec}s`;
+}
+
 export function pnlColor(value: number): string {
     if (value > 0) return 'text-profit';
     if (value < 0) return 'text-loss';

@@ -7,6 +7,7 @@ import AppLayout from '@/Layouts/AppLayout';
 import RunComparison from '@/Components/RunComparison';
 import TradesTable from '@/Components/TradesTable';
 import BacktestChart from '@/Components/BacktestChart';
+import OptimizationPanel from '@/Components/OptimizationPanel';
 import { fmtMoney } from '@/lib/format';
 import type {
     AiAnalysis, Backtest, Candle, SchemaField, Strategy, StrategySchemas, WorkbenchRun,
@@ -263,6 +264,19 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
 
                     <TradesTable trades={runs.current.trades} />
                 </div>
+            </div>
+
+            {/* Optimización automática robusta */}
+            <div className="mt-8">
+                <OptimizationPanel
+                    strategyType={type}
+                    pair={strategy.pair}
+                    timeframe={strategy.timeframe}
+                    period={period}
+                    indicators={indicators}
+                    risk={risk}
+                    onLoad={(params) => applyToPanel(params, risk)}
+                />
             </div>
 
             {/* Panel inferior: afinamiento IA */}

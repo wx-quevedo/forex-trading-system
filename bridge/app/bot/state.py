@@ -58,6 +58,7 @@ class BotState:
         self.started_at: str | None = None
         self.last_candle_time: int | None = None
         self.open_tickets: dict[int, dict[str, Any]] = {}
+        self.pending_reasons: dict[int, str] = {}  # ticket -> motivo de cierre forzado
         self.signals: list[dict[str, Any]] = []
         self.closed_trades: list[dict[str, Any]] = []
         self._seq: int = 0

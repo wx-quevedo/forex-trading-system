@@ -102,6 +102,43 @@ class WorkbenchController extends Controller
         ]);
     }
 
+    /**
+     * Optimización automática anti-overfitting: barre parámetros y devuelve un
+     * ranking por robustez (consistencia in-sample ↔ out-of-sample), NO por retorno.
+     */
+    public function optimize(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'strategy_type' => ['required', Rule::in(StrategyRequest::TYPES)],
+            'pair' => ['required', 'string', 'max:20'],
+            'timeframe' => ['required', Rule::in(StrategyRequest::TIMEFRAMES)],
+            'date_from' => ['required', 'date'],
+            'date_to' => ['required', 'date', 'after_or_equal:date_from'],
+            'indicators' => ['array'],
+            'risk' => ['array'],
+        ]);
+
+        set_time_limit(300);
+
+        try {
+            $result = $this->bridge->optimize(
+                $data['strategy_type'],
+                $data['indicators'] ?? [],
+                strtoupper($data['pair']),
+                $data['timeframe'],
+                \Illuminate\Support\Carbon::parse($data['date_from'])->toIso8601String(),
+                \Illuminate\Support\Carbon::parse($data['date_to'])->toIso8601String(),
+                $data['risk'] ?? [],
+            );
+        } catch (BridgeException $e) {
+            return response()->json(['error' => $e->getMessage()], $e->status);
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
+        }
+
+        return response()->json($result);
+    }
+
     /** Guarda los parámetros del panel como nueva versión; opcionalmente persiste la corrida actual. */
     public function saveVersion(Request $request, Strategy $strategy): RedirectResponse
     {

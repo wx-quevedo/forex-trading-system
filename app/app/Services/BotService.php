@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Events\BotUpdated;
+use App\Models\BotEvent;
 use App\Models\BotRun;
 use App\Models\SignalLog;
 use App\Models\Trade;
@@ -92,6 +93,7 @@ class BotService
             if ($ticket && ! in_array($ticket, $seenOpen, true)) {
                 $dir = ($p['type'] ?? 0) === 0 ? 'BUY' : 'SELL';
                 $this->telegram->notify('trade_opened', "Trade abierto: {$dir} {$p['symbol']} {$p['volume']} lotes @ {$p['price_open']}");
+                $this->logEvent($run->id, 'trade_opened', 'info', "Trade abierto {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}");
             }
         }
         Cache::forever($seenOpenKey, $currentOpen);
@@ -118,12 +120,16 @@ class BotService
                     'open_at' => isset($t['open_at']) ? Carbon::parse($t['open_at']) : null,
                     'close_at' => isset($t['close_at']) ? Carbon::parse($t['close_at']) : null,
                     'pnl' => $t['pnl'] ?? 0,
+                    'close_reason' => $t['close_reason'] ?? null,
+                    'signal_data' => ['open_reason' => $t['open_reason'] ?? null, 'open_indicators' => $t['open_indicators'] ?? null],
                 ],
             );
             if (! in_array($ticket, $seenClosed, true)) {
                 $seenClosed[] = $ticket;
                 $pnl = (float) ($t['pnl'] ?? 0);
-                $this->telegram->notify('trade_closed', "Trade cerrado: {$t['symbol']} PnL " . number_format($pnl, 2));
+                $reason = $t['close_reason'] ?? 'cierre';
+                $this->telegram->notify('trade_closed', "Trade cerrado: {$t['symbol']} PnL " . number_format($pnl, 2) . " ({$reason})");
+                $this->logEvent($run->id, 'trade_closed', $pnl >= 0 ? 'info' : 'warning', "Trade cerrado {$t['symbol']} · PnL " . number_format($pnl, 2) . " · {$reason}");
             }
         }
         Cache::forever($seenClosedKey, $seenClosed);
@@ -147,10 +153,31 @@ class BotService
             $reason = $status['stop_reason'] ?? '';
             if ($botStatus === 'stopped' && str_contains($reason, 'pérdida diaria')) {
                 $this->telegram->notify('daily_limit', "Bot auto-detenido: {$reason}");
+                $this->logEvent($run->id, 'daily_limit', 'warning', "Auto-stop: {$reason}");
             } elseif ($botStatus === 'error') {
-                $this->telegram->notify('error', 'Error crítico del bot: ' . ($status['error'] ?? 'desconocido'));
+                $msg = 'Error crítico del bot: ' . ($status['error'] ?? 'desconocido');
+                $this->telegram->notify('error', $msg);
+                $this->logEvent($run->id, 'error', 'error', $msg);
+            } elseif ($botStatus === 'stopped') {
+                $this->logEvent($run->id, 'stopped', 'info', $reason ?: 'Bot detenido.');
             }
             Cache::forever($lastStatusKey, $botStatus);
+        }
+    }
+
+    /** Registra un evento del Journal del bot (idempotencia básica por mensaje+minuto). */
+    public function logEvent(?int $runId, string $type, string $severity, string $message): void
+    {
+        try {
+            BotEvent::create([
+                'bot_run_id' => $runId,
+                'type' => $type,
+                'severity' => $severity,
+                'message' => $message,
+                'occurred_at' => now(),
+            ]);
+        } catch (Throwable) {
+            // el journal no debe romper el flujo
         }
     }
 }

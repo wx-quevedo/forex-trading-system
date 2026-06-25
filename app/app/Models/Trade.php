@@ -10,7 +10,7 @@ class Trade extends Model
     protected $fillable = [
         'bot_run_id', 'ticket', 'symbol', 'direction',
         'open_price', 'close_price', 'volume', 'sl', 'tp',
-        'open_at', 'close_at', 'pnl', 'commission', 'swap', 'signal_data',
+        'open_at', 'close_at', 'pnl', 'commission', 'swap', 'signal_data', 'close_reason',
     ];
 
     protected $casts = [
