@@ -6,6 +6,6 @@ y el bot en vivo (Fase 7).
 """
 
 from .engine import evaluate_strategy
-from .strategies import STRATEGY_SCHEMAS, build_strategy
+from .strategies import STRATEGY_SCHEMAS, build_strategy, signal_series
 
-__all__ = ["evaluate_strategy", "STRATEGY_SCHEMAS", "build_strategy"]
+__all__ = ["evaluate_strategy", "STRATEGY_SCHEMAS", "build_strategy", "signal_series"]

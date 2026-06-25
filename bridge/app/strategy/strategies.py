@@ -228,6 +228,54 @@ STRATEGY_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+def signal_series(strategy: Strategy, df: pd.DataFrame) -> pd.Series:
+    """Serie vectorizada de señales ('buy'/'sell'/'none') por vela.
+
+    Usada por el backtester (Fase 5). Refleja la misma lógica que `evaluate()`
+    pero sobre toda la serie en lugar de solo la última vela.
+    """
+    close = df["close"]
+    buy = pd.Series(False, index=df.index)
+    sell = pd.Series(False, index=df.index)
+    t = strategy.type
+
+    if t == "ma_cross":
+        fn = ind.ema if strategy.ma_type == "ema" else ind.sma  # type: ignore[attr-defined]
+        fast = fn(close, strategy.fast_period)  # type: ignore[attr-defined]
+        slow = fn(close, strategy.slow_period)  # type: ignore[attr-defined]
+        buy = (fast.shift(1) <= slow.shift(1)) & (fast > slow)
+        sell = (fast.shift(1) >= slow.shift(1)) & (fast < slow)
+    elif t == "rsi":
+        r = ind.rsi(close, strategy.period)  # type: ignore[attr-defined]
+        buy = (r.shift(1) <= strategy.oversold) & (r > strategy.oversold)  # type: ignore[attr-defined]
+        sell = (r.shift(1) >= strategy.overbought) & (r < strategy.overbought)  # type: ignore[attr-defined]
+    elif t == "macd":
+        macd_line, signal_line, _ = ind.macd(close, strategy.fast, strategy.slow, strategy.signal)  # type: ignore[attr-defined]
+        buy = (macd_line.shift(1) <= signal_line.shift(1)) & (macd_line > signal_line)
+        sell = (macd_line.shift(1) >= signal_line.shift(1)) & (macd_line < signal_line)
+    elif t == "bollinger":
+        upper, _, lower = ind.bollinger(close, strategy.period, strategy.std_dev)  # type: ignore[attr-defined]
+        buy = (close.shift(1) <= upper.shift(1)) & (close > upper)
+        sell = (close.shift(1) >= lower.shift(1)) & (close < lower)
+    elif t == "combined":
+        fn = ind.ema if strategy.trend_ma_type == "ema" else ind.sma  # type: ignore[attr-defined]
+        trend = fn(close, strategy.trend_period)  # type: ignore[attr-defined]
+        r = ind.rsi(close, strategy.rsi_period)  # type: ignore[attr-defined]
+        trend_up = close > trend
+        trend_down = close < trend
+        rsi_buy = (r.shift(1) <= strategy.rsi_oversold) & (r > strategy.rsi_oversold)  # type: ignore[attr-defined]
+        rsi_sell = (r.shift(1) >= strategy.rsi_overbought) & (r < strategy.rsi_overbought)  # type: ignore[attr-defined]
+        if strategy.logic == "and":  # type: ignore[attr-defined]
+            buy, sell = trend_up & rsi_buy, trend_down & rsi_sell
+        else:
+            buy, sell = trend_up | rsi_buy, trend_down | rsi_sell
+
+    out = pd.Series("none", index=df.index, dtype=object)
+    out[buy.fillna(False)] = "buy"
+    out[sell.fillna(False) & ~buy.fillna(False)] = "sell"
+    return out
+
+
 def build_strategy(type_: str, params: dict[str, Any] | None = None) -> Strategy:
     """Instancia una estrategia rellenando los parámetros faltantes con sus defaults."""
     if type_ not in _REGISTRY:

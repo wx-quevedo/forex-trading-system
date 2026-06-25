@@ -102,7 +102,30 @@ php artisan bridge:broadcast-positions --watch   # sondea el bridge y emite por 
 - ✅ **Fase 2** — Backend Laravel: modelos/migraciones, `PythonBridgeService`, auth básica, Reverb + Echo
 - ✅ **Fase 3** — Frontend: Dashboard + charts + posiciones en tiempo real
 - ✅ **Fase 4** — Módulo de Estrategias: CRUD + versionado + formulario dinámico + motor Python + evaluación manual
-- ⏭ **Fase 5** — Motor de Backtesting
+- ✅ **Fase 5** — Motor de Backtesting: engine pandas + Job async + métricas + equity/PnL (Recharts) + chart con marcadores
+- ⏭ **Fase 6** — Análisis IA (Anthropic)
+
+## 10. Módulo de Backtesting (Fase 5)
+
+Crear backtest en `/backtests`: estrategia + rango de fechas. Se crea una fila
+`backtests` en estado `pending` y se despacha el Job **asíncrono** `App\Jobs\RunBacktest`
+(Queue + Horizon en producción), que pide al bridge correr la simulación sobre datos
+históricos de MT5 y persiste métricas/trades/equity. Al terminar emite el evento Reverb
+`BacktestCompleted` y la vista de resultados se actualiza sola.
+
+Procesar la cola en local (la conexión es `database`):
+
+```bash
+php artisan queue:work        # o queue:listen; en prod: Horizon
+```
+
+La vista de resultados (`Pages/Backtests/Show.tsx`) muestra: métricas (win rate, profit
+factor, Sharpe, Sortino, max drawdown, rachas), **equity curve** y **PnL por mes**
+(Recharts), **distribución de PnL por trade**, **chart de velas con marcadores** de cada
+trade (`Components/BacktestChart.tsx`) y tabla de trades con filtros.
+
+> Motor: backtester event-driven en pandas (`bridge/app/backtest/`), no vectorbt —
+> evita el peso de numba en Windows y da control total sobre métricas y marcadores.
 
 ## 9. Módulo de Estrategias (Fase 4)
 

@@ -92,6 +92,7 @@ por query string: `ws://host:8000/stream/EURUSD?api_key=<KEY>`.
 | WS | `/stream/{symbol}` | polling de ticks | Stream de precios en vivo |
 | GET | `/strategy/types` | motor de estrategias | Tipos y parámetros configurables |
 | POST | `/strategy/evaluate` | motor de estrategias | Evalúa una estrategia sobre datos actuales |
+| POST | `/backtest/run` | motor de backtesting | Backtest sobre datos históricos de MT5 |
 
 ### Motor de estrategias (Módulo 2 / Fase 4)
 

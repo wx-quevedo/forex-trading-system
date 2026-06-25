@@ -137,3 +137,59 @@ export interface EvaluateResult {
     timeframe: string;
     candles_evaluated: number;
 }
+
+// --- Backtesting (Módulo 3) ---
+export interface BacktestMetrics {
+    total_trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    profit_factor: number | null;
+    net_pnl: number;
+    gross_profit: number;
+    gross_loss: number;
+    return_pct: number;
+    final_balance: number;
+    max_drawdown_abs: number;
+    max_drawdown_pct: number;
+    sharpe: number;
+    sortino: number;
+    max_win_streak: number;
+    max_loss_streak: number;
+    avg_win: number;
+    avg_loss: number;
+    pnl_by_month: Record<string, number>;
+}
+
+export interface BacktestTrade {
+    entry_time: number;
+    exit_time: number;
+    direction: 'buy' | 'sell';
+    entry_price: number;
+    exit_price: number;
+    volume: number;
+    sl: number | null;
+    tp: number | null;
+    pnl: number;
+    exit_reason: 'sl' | 'tp' | 'signal' | 'end';
+    balance: number;
+}
+
+export interface EquityPoint {
+    time: number;
+    equity: number;
+}
+
+export interface Backtest {
+    id: number;
+    strategy_id: number;
+    date_from: string;
+    date_to: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    result_metrics: BacktestMetrics | null;
+    result_trades: BacktestTrade[] | null;
+    result_equity_curve: EquityPoint[] | null;
+    error: string | null;
+    created_at: string;
+    strategy?: Strategy;
+}

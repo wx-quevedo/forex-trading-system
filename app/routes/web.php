@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\MarketController;
 use App\Http\Controllers\StrategyController;
@@ -23,6 +24,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/strategies/{strategy}/version', [StrategyController::class, 'version'])->name('strategies.version');
     Route::post('/strategies/{strategy}/evaluate', [StrategyController::class, 'evaluate'])->name('strategies.evaluate');
     Route::resource('strategies', StrategyController::class);
+
+    // --- Módulo de Backtesting ---
+    Route::resource('backtests', BacktestController::class)->only(['index', 'create', 'store', 'show', 'destroy']);
 
     // Endpoints JSON para el frontend (refresco de charts / precios / posiciones).
     Route::prefix('api')->group(function () {

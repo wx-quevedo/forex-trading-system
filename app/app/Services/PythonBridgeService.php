@@ -30,11 +30,11 @@ class PythonBridgeService
         );
     }
 
-    private function client(): PendingRequest
+    private function client(?int $timeout = null): PendingRequest
     {
         return Http::baseUrl($this->baseUrl)
             ->withHeaders(['X-API-Key' => $this->apiKey])
-            ->timeout($this->timeout)
+            ->timeout($timeout ?? $this->timeout)
             ->acceptJson();
     }
 
@@ -42,10 +42,10 @@ class PythonBridgeService
      * Ejecuta una petición y devuelve el JSON, traduciendo errores del bridge
      * a una excepción con el mensaje original para que el caller decida.
      */
-    private function request(string $method, string $uri, array $options = []): mixed
+    private function request(string $method, string $uri, array $options = [], ?int $timeout = null): mixed
     {
         try {
-            $response = $this->client()->send($method, $uri, $options);
+            $response = $this->client($timeout)->send($method, $uri, $options);
         } catch (RequestException $e) {
             throw new RuntimeException("Bridge no accesible: {$e->getMessage()}", previous: $e);
         }
@@ -150,5 +150,36 @@ class PythonBridgeService
                 'count' => $count,
             ],
         ]);
+    }
+
+    // --- Backtesting (Módulo 3) ------------------------------------------
+    /**
+     * Ejecuta un backtest sobre datos históricos de MT5.
+     *
+     * @param  array<string, mixed>  $params  Parámetros del indicador.
+     * @param  array<string, mixed>  $risk    sl_pips, tp_pips, risk_percent.
+     */
+    public function runBacktest(
+        string $type,
+        array $params,
+        string $symbol,
+        string $timeframe,
+        string $from,
+        string $to,
+        array $risk = [],
+        array $config = [],
+    ): array {
+        return $this->request('POST', '/backtest/run', [
+            'json' => [
+                'type' => $type,
+                'params' => (object) $params,
+                'symbol' => $symbol,
+                'timeframe' => $timeframe,
+                'from' => $from,
+                'to' => $to,
+                'risk' => (object) $risk,
+                'config' => (object) $config,
+            ],
+        ], timeout: 120); // el backtest puede tardar; ampliamos el timeout.
     }
 }
