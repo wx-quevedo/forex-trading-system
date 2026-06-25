@@ -1,0 +1,9 @@
+# Estado de PIDs y logs de los servicios lanzados por el panel
+panel_state.json
+logs/
+
+# Empaquetado PyInstaller
+build/
+dist/
+*.spec
+__pycache__/

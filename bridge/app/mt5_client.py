@@ -81,6 +81,7 @@ class MT5Client:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._connected = False
+        self._tradable_cache: dict[str, str] = {}  # base -> símbolo operable resuelto
 
     # -- ciclo de vida -----------------------------------------------------
     def connect(self) -> bool:
@@ -191,6 +192,56 @@ class MT5Client:
                     mt5_error=mt5.last_error(),
                 )
 
+    def resolve_tradable_symbol(self, base: str) -> str:
+        """Resuelve el símbolo OPERABLE real del broker para un símbolo base.
+
+        Muchos brokers (p.ej. XM Ultra Low) exponen una variante de cada par solo
+        para datos (`trade_mode == DISABLED`) y otra operable con sufijo
+        (`EURUSD#`, o `.m`, `.raw`, etc. según el broker). Operar la deshabilitada
+        devuelve `retcode 10017`. Esto encuentra y activa la variante operable.
+
+        Genérico (no hardcodea `#`) y cacheado. Si ya es operable, lo devuelve tal cual.
+        """
+        self.ensure_connected()
+        base_u = base.strip().upper()
+        if base_u in self._tradable_cache:
+            return self._tradable_cache[base_u]
+
+        info = mt5.symbol_info(base_u)
+        if info is not None and info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED:
+            resolved = info.name  # el base ya es operable
+        else:
+            resolved = self._find_tradable_variant(base_u) or base_u
+
+        mt5.symbol_select(resolved, True)  # activarlo en Market Watch si está oculto
+        self._tradable_cache[base_u] = resolved
+        return resolved
+
+    def _find_tradable_variant(self, base_u: str) -> str | None:
+        """Busca un símbolo operable cuyo nombre empiece por el base + sufijo."""
+        syms = mt5.symbols_get()
+        if not syms:
+            return None
+        disabled = mt5.SYMBOL_TRADE_MODE_DISABLED
+        full = mt5.SYMBOL_TRADE_MODE_FULL
+
+        candidates = []
+        for s in syms:
+            name = s.name.upper()
+            if not name.startswith(base_u) or s.trade_mode == disabled:
+                continue
+            rem = name[len(base_u):]
+            # Preferir sufijos separadores ('#', '.', '_', '-') frente a alfabéticos
+            # (evita confundir EURUSD con EURUSDT, otro instrumento).
+            sep = (rem == "") or (not rem[0].isalnum())
+            candidates.append((s, rem, sep))
+
+        if not candidates:
+            return None
+        # Ranking: operable completo (FULL) > sufijo separador > sufijo más corto.
+        best = max(candidates, key=lambda c: (c[0].trade_mode == full, c[2], -len(c[1])))
+        return best[0].name
+
     def price(self, symbol: str) -> dict[str, Any]:
         self.ensure_connected()
         self._ensure_symbol(symbol)
@@ -297,6 +348,9 @@ class MT5Client:
     ) -> dict[str, Any]:
         """Envía una orden de mercado BUY/SELL vía mt5.order_send()."""
         self.ensure_connected()
+        # Resolver al símbolo OPERABLE del broker (evita retcode 10017 en variantes
+        # solo-datos como EURUSD trade_mode=0 → usa EURUSD#).
+        symbol = self.resolve_tradable_symbol(symbol)
         self._ensure_symbol(symbol)
 
         side = order_type.upper()

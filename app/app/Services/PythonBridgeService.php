@@ -93,6 +93,9 @@ class PythonBridgeService
     {
         return Cache::remember('forexbot.tradable_symbols', now()->addHour(), function () {
             return collect($this->symbols())
+                // Solo símbolos OPERABLES (trade_mode != 0): excluye las variantes
+                // solo-datos (p.ej. EURUSD trade_mode=0) y deja las operables (EURUSD#).
+                ->reject(fn ($s) => (int) ($s['trade_mode'] ?? 0) === 0)
                 ->reject(fn ($s) => str_starts_with((string) ($s['path'] ?? ''), 'Stocks'))
                 ->pluck('name')
                 ->filter()

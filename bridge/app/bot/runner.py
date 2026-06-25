@@ -28,7 +28,13 @@ class BotRunner:
             s.bot_run_id = config.get("bot_run_id")
             s.strategy_type = config["strategy_type"]
             s.params = config.get("params", {})
-            s.symbol = config["symbol"].upper()
+            # Resolver al símbolo OPERABLE del broker (EURUSD -> EURUSD#) para que
+            # velas, precio, posiciones y órdenes usen todos el mismo símbolo real.
+            requested = config["symbol"].upper()
+            try:
+                s.symbol = client.resolve_tradable_symbol(requested)
+            except Exception:  # noqa: BLE001 - si falla, usar el solicitado
+                s.symbol = requested
             s.timeframe = config["timeframe"]
             s.lot = float(config.get("lot", 0.01))
             s.sl_pips = float(config.get("sl_pips", 20))
