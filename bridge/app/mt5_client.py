@@ -1,0 +1,423 @@
+"""Wrapper sobre la librería oficial MetaTrader5.
+
+Centraliza:
+- Inicialización y login al terminal MT5.
+- Reconexión automática (lazy) cuando la conexión se cae.
+- Manejo gracioso de errores (terminal offline, mercado cerrado, símbolo inválido).
+- Serialización de tipos MT5 (namedtuples, numpy structured arrays) a JSON.
+
+La librería oficial `MetaTrader5` SOLO funciona en Windows. El import se hace de
+forma defensiva para que el resto del código (y los tests) puedan importarse
+incluso si la librería no está instalada todavía.
+"""
+
+from __future__ import annotations
+
+import threading
+from datetime import datetime, timezone
+from typing import Any
+
+import numpy as np
+
+from .config import settings
+
+try:  # pragma: no cover - depende de plataforma
+    import MetaTrader5 as mt5  # type: ignore
+    MT5_AVAILABLE = True
+except Exception:  # ImportError en no-Windows o si no está instalada
+    mt5 = None  # type: ignore
+    MT5_AVAILABLE = False
+
+
+# --------------------------------------------------------------------------- #
+# Errores
+# --------------------------------------------------------------------------- #
+class MT5Error(Exception):
+    """Error de dominio del bridge. `code` mapea a un HTTP status en main.py."""
+
+    def __init__(self, message: str, *, code: int = 502, mt5_error: Any = None):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.mt5_error = mt5_error
+
+
+# --------------------------------------------------------------------------- #
+# Mapeo de timeframes
+# --------------------------------------------------------------------------- #
+def _timeframe_map() -> dict[str, int]:
+    if not MT5_AVAILABLE:
+        return {}
+    return {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+        "D1": mt5.TIMEFRAME_D1,
+        "W1": mt5.TIMEFRAME_W1,
+        "MN1": mt5.TIMEFRAME_MN1,
+    }
+
+
+def resolve_timeframe(tf: str) -> int:
+    mapping = _timeframe_map()
+    key = tf.upper()
+    if key not in mapping:
+        raise MT5Error(
+            f"Timeframe inválido '{tf}'. Válidos: {', '.join(mapping or ['M1','M5','M15','M30','H1','H4','D1'])}",
+            code=400,
+        )
+    return mapping[key]
+
+
+# --------------------------------------------------------------------------- #
+# Cliente / conexión
+# --------------------------------------------------------------------------- #
+class MT5Client:
+    """Mantiene la conexión al terminal MT5 con reconexión perezosa."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._connected = False
+
+    # -- ciclo de vida -----------------------------------------------------
+    def connect(self) -> bool:
+        """Inicializa el terminal y hace login. Idempotente."""
+        if not MT5_AVAILABLE:
+            raise MT5Error(
+                "La librería MetaTrader5 no está disponible. "
+                "El bridge debe ejecutarse en Windows con MT5 instalado.",
+                code=503,
+            )
+        with self._lock:
+            kwargs: dict[str, Any] = {}
+            if settings.mt5_path:
+                kwargs["path"] = settings.mt5_path
+            if settings.mt5_login:
+                kwargs.update(
+                    login=int(settings.mt5_login),
+                    password=settings.mt5_password,
+                    server=settings.mt5_server,
+                )
+
+            if not mt5.initialize(**kwargs):
+                err = mt5.last_error()
+                self._connected = False
+                raise MT5Error(
+                    "No se pudo inicializar el terminal MT5. "
+                    "Verifica que MT5 esté instalado, abierto y las credenciales en .env.",
+                    code=503,
+                    mt5_error=err,
+                )
+            self._connected = True
+            return True
+
+    def shutdown(self) -> None:
+        if MT5_AVAILABLE and self._connected:
+            mt5.shutdown()
+        self._connected = False
+
+    def ensure_connected(self) -> None:
+        """Garantiza una conexión viva; reconecta si hace falta."""
+        if not MT5_AVAILABLE:
+            raise MT5Error(
+                "La librería MetaTrader5 no está disponible (requiere Windows + MT5).",
+                code=503,
+            )
+        # terminal_info() devuelve None si el terminal no está conectado.
+        if not self._connected or mt5.terminal_info() is None:
+            self.connect()
+
+    def status(self) -> dict[str, Any]:
+        """Estado del bridge/terminal sin lanzar excepciones."""
+        info: dict[str, Any] = {
+            "mt5_library_available": MT5_AVAILABLE,
+            "connected": False,
+            "terminal": None,
+            "account_login": settings.mt5_login or None,
+            "server": settings.mt5_server or None,
+        }
+        if not MT5_AVAILABLE:
+            return info
+        try:
+            term = mt5.terminal_info()
+            if term is not None:
+                info["connected"] = bool(term.connected)
+                info["terminal"] = _to_jsonable(term._asdict())
+        except Exception:  # noqa: BLE001 - status nunca debe romper
+            pass
+        return info
+
+    # -- cuenta ------------------------------------------------------------
+    def account_info(self) -> dict[str, Any]:
+        self.ensure_connected()
+        info = mt5.account_info()
+        if info is None:
+            raise MT5Error("No se pudo obtener account_info().", mt5_error=mt5.last_error())
+        return _to_jsonable(info._asdict())
+
+    # -- símbolos / precios ------------------------------------------------
+    def symbols(self, group: str | None = None) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        syms = mt5.symbols_get(group) if group else mt5.symbols_get()
+        if syms is None:
+            raise MT5Error("No se pudieron obtener los símbolos.", mt5_error=mt5.last_error())
+        return [
+            {
+                "name": s.name,
+                "description": s.description,
+                "path": s.path,
+                "digits": s.digits,
+                "spread": s.spread,
+                "trade_mode": s.trade_mode,
+                "visible": s.visible,
+                "bid": s.bid,
+                "ask": s.ask,
+            }
+            for s in syms
+        ]
+
+    def _ensure_symbol(self, symbol: str) -> None:
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            raise MT5Error(f"Símbolo desconocido: '{symbol}'.", code=404, mt5_error=mt5.last_error())
+        if not info.visible:
+            # Algunos símbolos requieren ser seleccionados en Market Watch.
+            if not mt5.symbol_select(symbol, True):
+                raise MT5Error(
+                    f"No se pudo seleccionar el símbolo '{symbol}' en Market Watch.",
+                    mt5_error=mt5.last_error(),
+                )
+
+    def price(self, symbol: str) -> dict[str, Any]:
+        self.ensure_connected()
+        self._ensure_symbol(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise MT5Error(
+                f"Sin tick para '{symbol}'. ¿Mercado cerrado o símbolo inactivo?",
+                code=409,
+                mt5_error=mt5.last_error(),
+            )
+        data = _to_jsonable(tick._asdict())
+        data["symbol"] = symbol
+        return data
+
+    def candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        count: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        self._ensure_symbol(symbol)
+        tf = resolve_timeframe(timeframe)
+
+        if count is not None and date_from is None:
+            # Últimas N velas hasta date_to (o ahora).
+            pos_to = date_to or datetime.now(tz=timezone.utc)
+            rates = mt5.copy_rates_from(symbol, tf, pos_to, count)
+        else:
+            if date_from is None:
+                raise MT5Error("Debe indicarse 'from' (o 'count') para obtener velas.", code=400)
+            pos_to = date_to or datetime.now(tz=timezone.utc)
+            rates = mt5.copy_rates_range(symbol, tf, date_from, pos_to)
+
+        if rates is None:
+            raise MT5Error(
+                f"No se pudieron obtener velas de '{symbol}'.",
+                code=409,
+                mt5_error=mt5.last_error(),
+            )
+        return _rates_to_list(rates)
+
+    # -- posiciones / órdenes / historial ----------------------------------
+    def positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        pos = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        if pos is None:
+            # positions_get devuelve None cuando hay error real; () si no hay posiciones.
+            err = mt5.last_error()
+            if err and err[0] != 1:  # 1 == RES_S_OK
+                raise MT5Error("Error obteniendo posiciones.", mt5_error=err)
+            return []
+        return [_to_jsonable(p._asdict()) for p in pos]
+
+    def orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        orders = mt5.orders_get(symbol=symbol) if symbol else mt5.orders_get()
+        if orders is None:
+            err = mt5.last_error()
+            if err and err[0] != 1:
+                raise MT5Error("Error obteniendo órdenes pendientes.", mt5_error=err)
+            return []
+        return [_to_jsonable(o._asdict()) for o in orders]
+
+    def history_deals(self, date_from: datetime, date_to: datetime) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        deals = mt5.history_deals_get(date_from, date_to)
+        if deals is None:
+            err = mt5.last_error()
+            if err and err[0] != 1:
+                raise MT5Error("Error obteniendo historial de deals.", mt5_error=err)
+            return []
+        return [_to_jsonable(d._asdict()) for d in deals]
+
+    # -- trading -----------------------------------------------------------
+    def send_order(
+        self,
+        symbol: str,
+        order_type: str,
+        volume: float,
+        price: float | None = None,
+        sl: float | None = None,
+        tp: float | None = None,
+        deviation: int = 20,
+        comment: str = "forexbot",
+        magic: int = 990001,
+    ) -> dict[str, Any]:
+        """Envía una orden de mercado BUY/SELL vía mt5.order_send()."""
+        self.ensure_connected()
+        self._ensure_symbol(symbol)
+
+        side = order_type.upper()
+        if side not in ("BUY", "SELL"):
+            raise MT5Error("order_type debe ser 'BUY' o 'SELL'.", code=400)
+
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise MT5Error(
+                f"Sin precio para '{symbol}' (¿mercado cerrado?).", code=409, mt5_error=mt5.last_error()
+            )
+
+        mt5_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
+        fill_price = price if price is not None else (tick.ask if side == "BUY" else tick.bid)
+
+        request: dict[str, Any] = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(volume),
+            "type": mt5_type,
+            "price": float(fill_price),
+            "deviation": int(deviation),
+            "magic": int(magic),
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        if sl is not None:
+            request["sl"] = float(sl)
+        if tp is not None:
+            request["tp"] = float(tp)
+
+        result = mt5.order_send(request)
+        if result is None:
+            raise MT5Error("order_send() devolvió None.", mt5_error=mt5.last_error())
+
+        payload = _to_jsonable(result._asdict())
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise MT5Error(
+                f"Orden rechazada por el broker (retcode {result.retcode}): {result.comment}",
+                code=422,
+                mt5_error=payload,
+            )
+        return payload
+
+    def close_position(self, ticket: int, deviation: int = 20) -> dict[str, Any]:
+        """Cierra una posición abierta por su ticket."""
+        self.ensure_connected()
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            raise MT5Error(f"No existe posición abierta con ticket {ticket}.", code=404)
+        pos = positions[0]
+
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is None:
+            raise MT5Error(
+                f"Sin precio para cerrar '{pos.symbol}' (¿mercado cerrado?).",
+                code=409,
+                mt5_error=mt5.last_error(),
+            )
+
+        # Para cerrar: tipo opuesto al de la posición.
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            close_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
+        else:
+            close_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": float(pos.volume),
+            "type": close_type,
+            "position": int(ticket),
+            "price": float(price),
+            "deviation": int(deviation),
+            "magic": int(pos.magic),
+            "comment": "forexbot-close",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            raise MT5Error("order_send() (cierre) devolvió None.", mt5_error=mt5.last_error())
+
+        payload = _to_jsonable(result._asdict())
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise MT5Error(
+                f"Cierre rechazado (retcode {result.retcode}): {result.comment}",
+                code=422,
+                mt5_error=payload,
+            )
+        return payload
+
+
+# --------------------------------------------------------------------------- #
+# Serialización
+# --------------------------------------------------------------------------- #
+def _to_jsonable(obj: Any) -> Any:
+    """Convierte tipos numpy / dict de MT5 a tipos JSON-serializables."""
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    return obj
+
+
+def _rates_to_list(rates: np.ndarray) -> list[dict[str, Any]]:
+    """Convierte el structured array de copy_rates_* a lista de velas OHLCV."""
+    out: list[dict[str, Any]] = []
+    for r in rates:
+        ts = int(r["time"])
+        out.append(
+            {
+                "time": ts,
+                "datetime": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "tick_volume": int(r["tick_volume"]),
+                "spread": int(r["spread"]) if "spread" in rates.dtype.names else None,
+                "real_volume": int(r["real_volume"]) if "real_volume" in rates.dtype.names else None,
+            }
+        )
+    return out
+
+
+# Instancia única usada por los routers.
+client = MT5Client()
