@@ -80,8 +80,25 @@ BRIDGE_TIMEOUT=15
 `config/forexbot.php` ya expone `anthropic.api_key` y `anthropic.model`
 (`claude-sonnet-4-6`). La integración se implementa en la Fase 6.
 
-## 7. Estado de fases
+## 7. Frontend (Fase 3 — React + TypeScript + Inertia + Tailwind v4)
+
+- SPA con **Inertia** + **React 19** + **TypeScript**, entrypoint `resources/js/app.tsx`, vista raíz `resources/views/app.blade.php`.
+- **Tailwind v4** con la paleta dark de trading y fuentes (JetBrains Mono / Inter) en `resources/css/app.css`.
+- Charts con **TradingView Lightweight Charts v5** (`Components/CandleChart.tsx`): velas + pane de volumen + oscilador seleccionable (RSI / MACD, calculados en `lib/indicators.ts`). KPIs con **Recharts** (pendiente de uso en backtests).
+- Páginas: `Pages/Auth/Login.tsx`, `Pages/Dashboard.tsx`. Layout: `Layouts/AppLayout.tsx`.
+- Componentes (§6 del doc): `PriceDisplay`, `MetricBadge`, `PositionCard`, `BotStatusIndicator`, `SignalLog`, `CandleChart`, `IndicatorPanel`.
+- **Tiempo real:** el dashboard escucha el canal Reverb `trading` (evento `positions.updated`) y refresca posiciones; respaldo por polling. Para emitir posiciones desde MT5:
+
+```bash
+php artisan reverb:start                         # servidor WebSocket
+php artisan bridge:broadcast-positions --watch   # sondea el bridge y emite por Reverb
+```
+
+> Tests: `phpunit.xml` fuerza SQLite en memoria (`:memory:`) para que los tests **no** toquen `database/database.sqlite`.
+
+## 8. Estado de fases
 
 - ✅ **Fase 1** — Bridge Python MT5 (carpeta `../bridge`)
 - ✅ **Fase 2** — Backend Laravel: modelos/migraciones, `PythonBridgeService`, auth básica, Reverb + Echo
-- ⏭ **Fase 3** — Frontend React + TypeScript + Inertia + Tailwind + TradingView Lightweight Charts
+- ✅ **Fase 3** — Frontend: Dashboard + charts + posiciones en tiempo real
+- ⏭ **Fase 4** — Módulo de Estrategias (CRUD + motor Python)
