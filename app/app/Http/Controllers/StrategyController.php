@@ -36,6 +36,7 @@ class StrategyController extends Controller
             'strategy' => null,
             'schemas' => $this->strategyTypes(),
             'timeframes' => StrategyRequest::TIMEFRAMES,
+            'symbols' => $this->symbols(),
         ]);
     }
 
@@ -74,6 +75,7 @@ class StrategyController extends Controller
             'strategy' => $strategy,
             'schemas' => $this->strategyTypes(),
             'timeframes' => StrategyRequest::TIMEFRAMES,
+            'symbols' => $this->symbols(),
         ]);
     }
 
@@ -168,6 +170,16 @@ class StrategyController extends Controller
     {
         try {
             return $this->bridge->strategyTypes();
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /** Símbolos operables del broker para el selector de par; vacío si el bridge no responde. */
+    private function symbols(): array
+    {
+        try {
+            return $this->bridge->tradableSymbolNames();
         } catch (Throwable) {
             return [];
         }

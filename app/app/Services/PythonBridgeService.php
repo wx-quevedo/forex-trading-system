@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -80,6 +81,26 @@ class PythonBridgeService
     public function symbols(?string $group = null): array
     {
         return $this->request('GET', '/symbols', $group ? ['query' => ['group' => $group]] : []);
+    }
+
+    /**
+     * Nombres de símbolos operables del broker (excluye las ~1300 acciones para
+     * un selector usable): Forex, derivados, cripto e índices. Cacheado 1 hora.
+     *
+     * @return list<string>
+     */
+    public function tradableSymbolNames(): array
+    {
+        return Cache::remember('forexbot.tradable_symbols', now()->addHour(), function () {
+            return collect($this->symbols())
+                ->reject(fn ($s) => str_starts_with((string) ($s['path'] ?? ''), 'Stocks'))
+                ->pluck('name')
+                ->filter()
+                ->unique()
+                ->sort()
+                ->values()
+                ->all();
+        });
     }
 
     // --- Mercado ---------------------------------------------------------
@@ -181,5 +202,38 @@ class PythonBridgeService
                 'config' => (object) $config,
             ],
         ], timeout: 120); // el backtest puede tardar; ampliamos el timeout.
+    }
+
+    // --- Bot en vivo (Módulo 5 / Fase 7) ---------------------------------
+    /** @param array<string, mixed> $config */
+    public function botStart(array $config): array
+    {
+        return $this->request('POST', '/bot/start', ['json' => $config]);
+    }
+
+    public function botPause(): array
+    {
+        return $this->request('POST', '/bot/pause');
+    }
+
+    public function botResume(): array
+    {
+        return $this->request('POST', '/bot/resume');
+    }
+
+    public function botStop(): array
+    {
+        return $this->request('POST', '/bot/stop');
+    }
+
+    /** PANIC: cierra todas las posiciones. Timeout amplio por si hay varias. */
+    public function botPanic(): array
+    {
+        return $this->request('POST', '/bot/panic', [], timeout: 60);
+    }
+
+    public function botStatus(): array
+    {
+        return $this->request('GET', '/bot/status');
     }
 }

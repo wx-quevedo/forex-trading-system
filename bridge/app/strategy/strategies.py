@@ -179,50 +179,50 @@ _LOGIC_OPTIONS = [{"value": "and", "label": "AND (ambas)"}, {"value": "or", "lab
 
 STRATEGY_SCHEMAS: dict[str, dict[str, Any]] = {
     "ma_cross": {
-        "label": "Cruce de Medias Móviles",
+        "label": "Moving Average Cross",
         "description": "Compra cuando la media rápida cruza por encima de la lenta; vende al contrario.",
         "fields": [
-            {"name": "ma_type", "label": "Tipo de media", "type": "select", "default": "ema", "options": _MA_OPTIONS},
-            {"name": "fast_period", "label": "Periodo rápido", "type": "number", "default": 9, "min": 1, "max": 200, "step": 1},
-            {"name": "slow_period", "label": "Periodo lento", "type": "number", "default": 21, "min": 2, "max": 400, "step": 1},
+            {"name": "ma_type", "label": "MA Type", "type": "select", "default": "ema", "options": _MA_OPTIONS},
+            {"name": "fast_period", "label": "Fast Period", "type": "number", "default": 9, "min": 1, "max": 200, "step": 1},
+            {"name": "slow_period", "label": "Slow Period", "type": "number", "default": 21, "min": 2, "max": 400, "step": 1},
         ],
     },
     "rsi": {
-        "label": "RSI Sobreventa/Sobrecompra",
+        "label": "RSI",
         "description": "Compra cuando el RSI sale de sobreventa; vende cuando sale de sobrecompra.",
         "fields": [
-            {"name": "period", "label": "Periodo RSI", "type": "number", "default": 14, "min": 2, "max": 100, "step": 1},
-            {"name": "oversold", "label": "Nivel sobreventa", "type": "number", "default": 30, "min": 1, "max": 49, "step": 1},
-            {"name": "overbought", "label": "Nivel sobrecompra", "type": "number", "default": 70, "min": 51, "max": 99, "step": 1},
+            {"name": "period", "label": "RSI Period", "type": "number", "default": 14, "min": 2, "max": 100, "step": 1},
+            {"name": "oversold", "label": "Oversold Level", "type": "number", "default": 30, "min": 1, "max": 49, "step": 1},
+            {"name": "overbought", "label": "Overbought Level", "type": "number", "default": 70, "min": 51, "max": 99, "step": 1},
         ],
     },
     "macd": {
-        "label": "Cruce MACD",
+        "label": "MACD",
         "description": "Compra cuando el MACD cruza por encima de su línea de señal; vende al contrario.",
         "fields": [
-            {"name": "fast", "label": "EMA rápida", "type": "number", "default": 12, "min": 2, "max": 100, "step": 1},
-            {"name": "slow", "label": "EMA lenta", "type": "number", "default": 26, "min": 3, "max": 200, "step": 1},
-            {"name": "signal", "label": "EMA señal", "type": "number", "default": 9, "min": 2, "max": 100, "step": 1},
+            {"name": "fast", "label": "Fast", "type": "number", "default": 12, "min": 2, "max": 100, "step": 1},
+            {"name": "slow", "label": "Slow", "type": "number", "default": 26, "min": 3, "max": 200, "step": 1},
+            {"name": "signal", "label": "Signal", "type": "number", "default": 9, "min": 2, "max": 100, "step": 1},
         ],
     },
     "bollinger": {
-        "label": "Ruptura de Bandas de Bollinger",
+        "label": "Bollinger Bands",
         "description": "Compra cuando el precio rompe la banda superior; vende cuando rompe la inferior.",
         "fields": [
-            {"name": "period", "label": "Periodo", "type": "number", "default": 20, "min": 2, "max": 200, "step": 1},
-            {"name": "std_dev", "label": "Desviaciones estándar", "type": "number", "default": 2.0, "min": 0.5, "max": 4, "step": 0.1},
+            {"name": "period", "label": "Period", "type": "number", "default": 20, "min": 2, "max": 200, "step": 1},
+            {"name": "std_dev", "label": "Deviation", "type": "number", "default": 2.0, "min": 0.5, "max": 4, "step": 0.1},
         ],
     },
     "combined": {
-        "label": "Combinada (Tendencia + RSI)",
+        "label": "Combined",
         "description": "Filtro de tendencia por media móvil combinado con confirmación del RSI (AND/OR).",
         "fields": [
-            {"name": "trend_ma_type", "label": "MA de tendencia", "type": "select", "default": "ema", "options": _MA_OPTIONS},
-            {"name": "trend_period", "label": "Periodo tendencia", "type": "number", "default": 50, "min": 2, "max": 400, "step": 1},
-            {"name": "rsi_period", "label": "Periodo RSI", "type": "number", "default": 14, "min": 2, "max": 100, "step": 1},
-            {"name": "rsi_oversold", "label": "RSI sobreventa", "type": "number", "default": 30, "min": 1, "max": 49, "step": 1},
-            {"name": "rsi_overbought", "label": "RSI sobrecompra", "type": "number", "default": 70, "min": 51, "max": 99, "step": 1},
-            {"name": "logic", "label": "Lógica", "type": "select", "default": "and", "options": _LOGIC_OPTIONS},
+            {"name": "trend_ma_type", "label": "Trend MA Type", "type": "select", "default": "ema", "options": _MA_OPTIONS},
+            {"name": "trend_period", "label": "Trend Period", "type": "number", "default": 50, "min": 2, "max": 400, "step": 1},
+            {"name": "rsi_period", "label": "RSI Period", "type": "number", "default": 14, "min": 2, "max": 100, "step": 1},
+            {"name": "rsi_oversold", "label": "Oversold Level", "type": "number", "default": 30, "min": 1, "max": 49, "step": 1},
+            {"name": "rsi_overbought", "label": "Overbought Level", "type": "number", "default": 70, "min": 51, "max": 99, "step": 1},
+            {"name": "logic", "label": "Logic", "type": "select", "default": "and", "options": _LOGIC_OPTIONS},
         ],
     },
 }

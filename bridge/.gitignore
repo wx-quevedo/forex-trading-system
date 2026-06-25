@@ -8,6 +8,9 @@ __pycache__/
 # Secretos
 .env
 
+# Estado del bot (persistencia local)
+bot_state.json
+
 # Logs
 *.log
 

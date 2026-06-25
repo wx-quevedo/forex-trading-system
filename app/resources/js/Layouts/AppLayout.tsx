@@ -1,5 +1,5 @@
 import { Link, usePage, router } from '@inertiajs/react';
-import type { PropsWithChildren } from 'react';
+import { useEffect, useState, type PropsWithChildren } from 'react';
 import type { SharedProps } from '@/types';
 import BotStatusIndicator from '@/Components/BotStatusIndicator';
 
@@ -7,11 +7,37 @@ const NAV = [
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/strategies', label: 'Estrategias' },
     { href: '/backtests', label: 'Backtests' },
+    { href: '/bot', label: 'Bot' },
 ];
 
 export default function AppLayout({ children, title }: PropsWithChildren<{ title?: string }>) {
     const { props, url } = usePage<SharedProps>();
     const user = props.auth.user;
+
+    // Estado real del bot para el indicador del header (sondeo ligero + Reverb).
+    const [botStatus, setBotStatus] = useState<string>('stopped');
+    useEffect(() => {
+        let alive = true;
+        const fetchState = async () => {
+            try {
+                const { data } = await window.axios.get('/bot/state');
+                if (alive) setBotStatus(data.status ?? 'stopped');
+            } catch {
+                /* ignora; reintenta en el siguiente tick */
+            }
+        };
+        fetchState();
+        const id = window.setInterval(fetchState, 5000);
+        const ch = window.Echo?.channel('bot');
+        ch?.listen('.bot.updated', (e: { status?: { status?: string } }) => {
+            if (alive && e.status?.status) setBotStatus(e.status.status);
+        });
+        return () => {
+            alive = false;
+            window.clearInterval(id);
+            ch?.stopListening('.bot.updated');
+        };
+    }, []);
 
     return (
         <div className="min-h-screen bg-bg-primary text-text-primary">
@@ -45,7 +71,7 @@ export default function AppLayout({ children, title }: PropsWithChildren<{ title
                     </div>
 
                     <div className="flex items-center gap-5">
-                        <BotStatusIndicator status="paused" />
+                        <BotStatusIndicator status={botStatus} />
                         {user && (
                             <div className="flex items-center gap-3">
                                 <span className="text-xs text-text-secondary">{user.name}</span>

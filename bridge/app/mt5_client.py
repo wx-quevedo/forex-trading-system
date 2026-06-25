@@ -247,6 +247,21 @@ class MT5Client:
             return []
         return [_to_jsonable(p._asdict()) for p in pos]
 
+    def closed_position_pnl(self, ticket: int) -> dict[str, Any] | None:
+        """PnL realizado de una posición ya cerrada (usado por el bot para
+        reconciliar cierres por SL/TP). Suma profit+commission+swap de sus deals."""
+        self.ensure_connected()
+        deals = mt5.history_deals_get(position=ticket)
+        if not deals:
+            return None
+        pnl = sum(float(d.profit) + float(d.commission) + float(d.swap) for d in deals)
+        closing = deals[-1]
+        return {
+            "pnl": round(pnl, 2),
+            "close_price": float(closing.price),
+            "close_time": int(closing.time),
+        }
+
     def orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         self.ensure_connected()
         orders = mt5.orders_get(symbol=symbol) if symbol else mt5.orders_get()

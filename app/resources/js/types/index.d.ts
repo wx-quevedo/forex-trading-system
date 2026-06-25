@@ -225,3 +225,62 @@ export interface WorkbenchRun {
     trades: BacktestTrade[];
     equity: EquityPoint[];
 }
+
+// --- Bot en vivo (Fase 7) ---
+export interface BotPosition {
+    ticket: number;
+    symbol: string;
+    type: number; // 0 = buy, 1 = sell
+    volume: number;
+    price_open: number;
+    price_current: number;
+    sl: number;
+    tp: number;
+    profit: number;
+}
+
+export interface BotSignal {
+    seq: number;
+    evaluated_at: string;
+    symbol: string;
+    signal_type: 'buy' | 'sell' | 'none';
+    executed: boolean;
+    reason: string;
+    indicator_values: Record<string, number | null>;
+}
+
+export interface BotClosedTrade {
+    ticket: number;
+    symbol: string;
+    direction: string | null;
+    volume: number | null;
+    open_price: number | null;
+    close_price: number | null;
+    pnl: number;
+    exit_reason?: string;
+    close_at?: string;
+}
+
+export interface BotStatus {
+    status: 'stopped' | 'running' | 'paused' | 'error';
+    error: string | null;
+    stop_reason: string | null;
+    bot_run_id: number | null;
+    strategy?: { type: string; params: Record<string, unknown>; symbol: string; timeframe: string };
+    config?: { lot: number; sl_pips: number; tp_pips: number; daily_loss_limit: number; max_positions: number };
+    day?: string;
+    started_at?: string | null;
+    realized_pnl_today?: number;
+    floating_pnl?: number;
+    daily_pnl?: number;
+    positions: BotPosition[];
+    open_positions?: number;
+    signals: BotSignal[];
+    closed_trades: BotClosedTrade[];
+}
+
+export interface TelegramSettings {
+    configured: boolean;
+    enabled: boolean;
+    events: Record<string, boolean>;
+}

@@ -23,6 +23,19 @@ return [
     | Anthropic (Análisis IA — Fase 6)
     |--------------------------------------------------------------------------
     */
+    /*
+    |--------------------------------------------------------------------------
+    | Telegram (notificaciones del bot — Fase 7)
+    |--------------------------------------------------------------------------
+    | Crea un bot con @BotFather → TELEGRAM_BOT_TOKEN. Obtén tu chat_id enviando
+    | un mensaje al bot y consultando https://api.telegram.org/bot<token>/getUpdates
+    | (el campo result[].message.chat.id) → TELEGRAM_CHAT_ID.
+    */
+    'telegram' => [
+        'token' => env('TELEGRAM_BOT_TOKEN', ''),
+        'chat_id' => env('TELEGRAM_CHAT_ID', ''),
+    ],
+
     'anthropic' => [
         'api_key' => env('ANTHROPIC_API_KEY', ''),
         'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),

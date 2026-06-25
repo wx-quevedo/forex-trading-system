@@ -7,13 +7,14 @@ interface Props {
     strategy: Strategy | null;
     schemas: StrategySchemas;
     timeframes: string[];
+    symbols: string[];
 }
 
 function defaultsFor(fields: SchemaField[]): Record<string, number | string> {
     return Object.fromEntries(fields.map((f) => [f.name, f.default]));
 }
 
-export default function Form({ strategy, schemas, timeframes }: Props) {
+export default function Form({ strategy, schemas, timeframes, symbols }: Props) {
     const isEdit = Boolean(strategy);
     const types = Object.keys(schemas);
     const initialType = strategy?.parameters?.type ?? types[0] ?? 'ma_cross';
@@ -96,10 +97,17 @@ export default function Form({ strategy, schemas, timeframes }: Props) {
                     <div className="grid grid-cols-2 gap-3">
                         <Field label="Par" error={errors.pair}>
                             <input
+                                list="symbol-options"
                                 value={data.pair}
                                 onChange={(e) => setData('pair', e.target.value.toUpperCase())}
+                                placeholder="EURUSD"
                                 className="input font-mono"
                             />
+                            <datalist id="symbol-options">
+                                {symbols.map((s) => (
+                                    <option key={s} value={s} />
+                                ))}
+                            </datalist>
                         </Field>
                         <Field label="Timeframe" error={errors.timeframe}>
                             <select

@@ -3,6 +3,7 @@
 use App\Http\Controllers\AiAnalysisController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
+use App\Http\Controllers\BotController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\MarketController;
 use App\Http\Controllers\StrategyController;
@@ -46,6 +47,17 @@ Route::middleware('auth')->group(function () {
     Route::post('/backtests/{backtest}/workbench/manual-prompt', [WorkbenchController::class, 'manualPrompt'])->name('workbench.manual-prompt');
     Route::post('/backtests/{backtest}/workbench/analyze', [WorkbenchController::class, 'analyze'])->name('workbench.analyze');
     Route::post('/strategies/{strategy}/save-version-from-workbench', [WorkbenchController::class, 'saveVersion'])->name('workbench.save-version');
+
+    // --- Bot en vivo (Fase 7) ---
+    Route::get('/bot', [BotController::class, 'control'])->name('bot.control');
+    Route::get('/bot/status', [BotController::class, 'status'])->name('bot.status');
+    Route::get('/bot/state', [BotController::class, 'state'])->name('bot.state');
+    Route::post('/bot/start', [BotController::class, 'start'])->name('bot.start');
+    Route::post('/bot/pause', [BotController::class, 'pause'])->name('bot.pause');
+    Route::post('/bot/resume', [BotController::class, 'resume'])->name('bot.resume');
+    Route::post('/bot/stop', [BotController::class, 'stop'])->name('bot.stop');
+    Route::post('/bot/panic', [BotController::class, 'panic'])->name('bot.panic');
+    Route::post('/bot/telegram', [BotController::class, 'updateTelegram'])->name('bot.telegram');
 
     // Endpoints JSON para el frontend (refresco de charts / precios / posiciones).
     Route::prefix('api')->group(function () {

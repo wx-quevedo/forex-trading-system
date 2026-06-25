@@ -3,11 +3,11 @@ import AppLayout from '@/Layouts/AppLayout';
 import type { Strategy } from '@/types';
 
 const TYPE_LABELS: Record<string, string> = {
-    ma_cross: 'Cruce MA',
+    ma_cross: 'Moving Average Cross',
     rsi: 'RSI',
     macd: 'MACD',
-    bollinger: 'Bollinger',
-    combined: 'Combinada',
+    bollinger: 'Bollinger Bands',
+    combined: 'Combined',
 };
 
 export default function Index({ strategies }: { strategies: Strategy[] }) {
