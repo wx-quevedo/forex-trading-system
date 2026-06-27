@@ -6,6 +6,7 @@ import BotStatusIndicator from '@/Components/BotStatusIndicator';
 const NAV = [
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/laboratory', label: 'Laboratorio' },
+    { href: '/explorer', label: 'Explorador' },
     { href: '/strategies', label: 'Estrategias' },
     { href: '/backtests', label: 'Backtests' },
     { href: '/bot', label: 'Bot' },

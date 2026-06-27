@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\BotController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ExplorerController;
 use App\Http\Controllers\LaboratoryController;
 use App\Http\Controllers\MarketController;
 use App\Http\Controllers\StrategyController;
@@ -27,6 +28,13 @@ Route::middleware('auth')->group(function () {
     // --- Laboratorio de Estrategias (Fase 8C) ---
     Route::get('/laboratory', [LaboratoryController::class, 'show'])->name('laboratory');
     Route::post('/laboratory', [LaboratoryController::class, 'save'])->name('laboratory.save');
+
+    // --- Explorador / Buscador de estrategias (Fase 8E) ---
+    Route::get('/explorer', [ExplorerController::class, 'show'])->name('explorer');
+    Route::post('/explorer/start', [ExplorerController::class, 'start'])->name('explorer.start');
+    Route::get('/explorer/status', [ExplorerController::class, 'status'])->name('explorer.status');
+    Route::get('/explorer/results', [ExplorerController::class, 'results'])->name('explorer.results');
+    Route::post('/explorer/cancel', [ExplorerController::class, 'cancel'])->name('explorer.cancel');
 
     // --- Módulo de Estrategias ---
     Route::post('/strategies/{strategy}/version', [StrategyController::class, 'version'])->name('strategies.version');

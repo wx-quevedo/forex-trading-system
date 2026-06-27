@@ -264,4 +264,35 @@ class PythonBridgeService
             'from' => $from, 'to' => $to, 'risk' => $risk, 'split' => $split, 'config' => (object) $config,
         ]], timeout: 300); // el barrido corre decenas de backtests.
     }
+
+    // --- Buscador de estrategias (Fase 8E) -------------------------------
+    /** Opciones del buscador: grids por tipo, choices SL/TP/riesgo, tope de seguridad. */
+    public function exploreMeta(): array
+    {
+        return $this->request('GET', '/explore/meta');
+    }
+
+    /** Inicia el barrido en segundo plano (devuelve al instante). @param array<string,mixed> $payload */
+    public function exploreStart(array $payload): array
+    {
+        return $this->request('POST', '/explore/start', ['json' => $payload]);
+    }
+
+    /** Progreso de la búsqueda en curso (sin resultados, ligero para sondeo). */
+    public function exploreStatus(): array
+    {
+        return $this->request('GET', '/explore/status');
+    }
+
+    /** Reporte completo de la última búsqueda. */
+    public function exploreResults(): array
+    {
+        return $this->request('GET', '/explore/results', [], timeout: 60);
+    }
+
+    /** Cancela la búsqueda en curso. */
+    public function exploreCancel(): array
+    {
+        return $this->request('POST', '/explore/cancel');
+    }
 }

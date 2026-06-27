@@ -351,6 +351,54 @@ export interface Optimization {
     results: OptimizationResult[];
 }
 
+// --- Buscador de estrategias (Fase 8E) ---
+export interface ExploreMeta {
+    grid_sizes: Record<string, number>;
+    sl_choices: number[];
+    tp_choices: number[];
+    risk_choices: number[];
+    sweep_timeframes: string[];
+    max_configs: number;
+}
+
+export interface ExploreResultRow {
+    pair: string;
+    type: string;
+    timeframe: string;
+    params: Record<string, number | string>;
+    sl_pips: number;
+    tp_pips: number;
+    risk_percent: number;
+    capital_final: number;
+    costs: number;
+    return_pct: number;
+    net_pnl: number;
+    win_rate: number; // fracción 0..1
+    profit_factor: number | null;
+    max_drawdown_pct: number;
+    total_trades: number;
+    in_return: number;
+    out_return: number;
+    robustness: number;
+    stars: number;
+    verdict: 'inside' | 'edge' | 'outside';
+    verdict_label: string;
+}
+
+export interface ExploreStatus {
+    status: 'idle' | 'running' | 'done' | 'cancelled' | 'error';
+    total: number;
+    done: number;
+    results_count: number;
+    inside_count: number;
+    current: string | null;
+    error: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    request: Record<string, unknown> | null;
+    results?: ExploreResultRow[];
+}
+
 // --- Journal del bot (Fase 8D) ---
 export interface BotEvent {
     id: number;

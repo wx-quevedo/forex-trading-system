@@ -109,6 +109,31 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         return () => { alive = false; };
     }, [pair]);
 
+    // Combo enviado desde el Explorador (sessionStorage): carga una configuración
+    // completa (tipo/par/tf/params/SL/TP/riesgo/capital) para inspeccionarla aquí.
+    useEffect(() => {
+        const raw = sessionStorage.getItem('forexbot.lab_combo');
+        if (!raw) return;
+        sessionStorage.removeItem('forexbot.lab_combo');
+        try {
+            const c = JSON.parse(raw) as {
+                type?: string; pair?: string; timeframe?: string;
+                indicators?: Record<string, number | string>; risk?: Record<string, number>; capital?: number;
+            };
+            if (c.type) setType(c.type);
+            if (c.pair) setPair(c.pair);
+            if (c.timeframe) setTimeframe(c.timeframe);
+            if (c.indicators) setIndicators(c.indicators);
+            if (c.risk) setRisk((p) => ({ ...p, ...c.risk }));
+            if (c.capital) setCapitalPref(c.capital);
+            if (c.indicators) {
+                setHighlight(new Set(Object.keys(c.indicators)));
+                setTimeout(() => setHighlight(new Set()), 2000);
+            }
+        } catch { /* combo inválido: ignora */ }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const changeType = (t: string) => {
         setType(t);
         setIndicators(schemas[t] ? defaultsFor(schemas[t].fields) : {});
