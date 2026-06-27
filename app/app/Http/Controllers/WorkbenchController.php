@@ -71,6 +71,7 @@ class WorkbenchController extends Controller
             'date_to' => ['required', 'date', 'after_or_equal:date_from'],
             'indicators' => ['array'],
             'risk' => ['array'],
+            'initial_balance' => ['nullable', 'numeric', 'min:1'],
         ]);
 
         if ($err = $this->validateAgainstSchema($data['strategy_type'], $data['indicators'] ?? [])) {
@@ -88,6 +89,7 @@ class WorkbenchController extends Controller
                 from: \Illuminate\Support\Carbon::parse($data['date_from'])->toIso8601String(),
                 to: \Illuminate\Support\Carbon::parse($data['date_to'])->toIso8601String(),
                 risk: $data['risk'] ?? [],
+                config: ! empty($data['initial_balance']) ? ['initial_balance' => (float) $data['initial_balance']] : [],
             );
         } catch (BridgeException $e) {
             return response()->json(['error' => $e->getMessage()], $e->status);
@@ -116,6 +118,7 @@ class WorkbenchController extends Controller
             'date_to' => ['required', 'date', 'after_or_equal:date_from'],
             'indicators' => ['array'],
             'risk' => ['array'],
+            'initial_balance' => ['nullable', 'numeric', 'min:1'],
         ]);
 
         set_time_limit(300);
@@ -129,6 +132,7 @@ class WorkbenchController extends Controller
                 \Illuminate\Support\Carbon::parse($data['date_from'])->toIso8601String(),
                 \Illuminate\Support\Carbon::parse($data['date_to'])->toIso8601String(),
                 $data['risk'] ?? [],
+                config: ! empty($data['initial_balance']) ? ['initial_balance' => (float) $data['initial_balance']] : [],
             );
         } catch (BridgeException $e) {
             return response()->json(['error' => $e->getMessage()], $e->status);

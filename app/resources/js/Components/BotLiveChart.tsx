@@ -18,6 +18,7 @@ import {
 import type { BotClosedTrade, BotPosition, BotSignal, Candle } from '@/types';
 import { movingAverage, bollinger, rsi, macd } from '@/lib/indicators';
 import { fmtTimeMs } from '@/lib/format';
+import { DISPLAY_TZ_OFFSET_SECONDS as TZ } from '@/lib/tz';
 import { PositionZones, type PositionZone } from '@/lib/positionZones';
 
 interface Props {
@@ -39,7 +40,7 @@ const C = {
     up: '#26a69a', down: '#ef5350', fast: '#2962ff', slow: '#f59e0b', band: '#7c83a3', neutral: '#8b8fa8',
 };
 
-const t = (time: number) => time as UTCTimestamp;
+const t = (time: number) => (time + TZ) as UTCTimestamp; // desplaza a hora local (UTC-5)
 const num = (v: number | string | undefined, d: number) => (v == null || v === '' ? d : Number(v));
 const oscillatorFor = (type: string): 'rsi' | 'macd' | 'volume' =>
     type === 'rsi' || type === 'combined' ? 'rsi' : type === 'macd' ? 'macd' : 'volume';
@@ -246,7 +247,7 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
         }
 
         if (wasFirst) {
-            if (focus) bundle.chart.timeScale().setVisibleRange({ from: focus.from as Time, to: focus.to as Time });
+            if (focus) bundle.chart.timeScale().setVisibleRange({ from: t(focus.from), to: t(focus.to) });
             else bundle.chart.timeScale().fitContent();
         } else if (follow.current && !focus) {
             bundle.chart.timeScale().scrollToRealTime();
@@ -267,11 +268,11 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             if (!ct) continue;
             if (s.signal_type === 'none') {
                 markers.push({ time: t(ct), position: 'belowBar', color: `${C.neutral}99`, shape: 'circle' });
-                if (!info.has(ct)) info.set(ct, { kind: 'eval', signal: s });
+                if (!info.has(ct + TZ)) info.set(ct + TZ, { kind: 'eval', signal: s });
             } else if (!s.executed) {
                 const buy = s.signal_type === 'buy';
                 markers.push({ time: t(ct), position: buy ? 'belowBar' : 'aboveBar', color: `${buy ? C.up : C.down}99`, shape: buy ? 'arrowUp' : 'arrowDown', size: 1 });
-                if (!info.has(ct)) info.set(ct, { kind: 'eval', signal: s });
+                if (!info.has(ct + TZ)) info.set(ct + TZ, { kind: 'eval', signal: s });
             }
         }
 
@@ -281,7 +282,7 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             if (!ct) continue;
             const buy = p.type === 0;
             markers.push({ time: t(ct), position: buy ? 'belowBar' : 'aboveBar', color: buy ? C.up : C.down, shape: buy ? 'arrowUp' : 'arrowDown', text: buy ? 'BUY' : 'SELL', size: 2 });
-            info.set(ct, { kind: 'entry', pos: p });
+            info.set(ct + TZ, { kind: 'entry', pos: p });
         }
 
         // Trades cerrados: entrada + salida con PnL.
@@ -291,14 +292,14 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
                 if (ct) {
                     const buy = (tr.direction ?? '').toLowerCase() === 'buy';
                     markers.push({ time: t(ct), position: buy ? 'belowBar' : 'aboveBar', color: buy ? C.up : C.down, shape: buy ? 'arrowUp' : 'arrowDown', text: buy ? 'BUY' : 'SELL', size: 2 });
-                    if (!info.has(ct)) info.set(ct, { kind: 'entryTrade', trade: tr });
+                    if (!info.has(ct + TZ)) info.set(ct + TZ, { kind: 'entryTrade', trade: tr });
                 }
             }
             if (tr.close_at) {
                 const ct = nearestCandleTime(candles, Math.floor(new Date(tr.close_at).getTime() / 1000));
                 if (ct) {
                     markers.push({ time: t(ct), position: 'aboveBar', shape: 'square', color: tr.pnl >= 0 ? C.up : C.down, text: `${tr.pnl >= 0 ? '+' : ''}${tr.pnl.toFixed(2)}` });
-                    info.set(ct, { kind: 'exit', trade: tr });
+                    info.set(ct + TZ, { kind: 'exit', trade: tr });
                 }
             }
         }
@@ -316,12 +317,13 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
         bundle.priceLines = [];
 
         const firstTime = candles[0]?.time ?? 0;
-        const zones: PositionZone[] = positions.map((p) => ({ from: p.time ?? firstTime, to: null, entry: p.price_open, tp: p.tp || null, sl: p.sl || null }));
+        // Las zonas usan el eje de tiempo del chart (desplazado a hora local).
+        const zones: PositionZone[] = positions.map((p) => ({ from: (p.time ?? firstTime) + TZ, to: null, entry: p.price_open, tp: p.tp || null, sl: p.sl || null }));
         if (showClosedZones) {
             for (const tr of closedTrades) {
                 if (tr.open_price == null) continue;
-                const from = tr.open_at ? Math.floor(new Date(tr.open_at).getTime() / 1000) : firstTime;
-                const to = tr.close_at ? Math.floor(new Date(tr.close_at).getTime() / 1000) : null;
+                const from = (tr.open_at ? Math.floor(new Date(tr.open_at).getTime() / 1000) : firstTime) + TZ;
+                const to = tr.close_at ? Math.floor(new Date(tr.close_at).getTime() / 1000) + TZ : null;
                 zones.push({ from, to, entry: tr.open_price, tp: tr.tp ?? null, sl: tr.sl ?? null });
             }
         }

@@ -10,6 +10,7 @@ import {
 } from 'lightweight-charts';
 import type { Candle } from '@/types';
 import { rsi, macd } from '@/lib/indicators';
+import { DISPLAY_TZ_OFFSET_SECONDS } from '@/lib/tz';
 
 export type Oscillator = 'none' | 'rsi' | 'macd';
 
@@ -30,7 +31,7 @@ const COLORS = {
     warning: '#f59e0b',
 };
 
-const t = (time: number) => time as UTCTimestamp;
+const t = (time: number) => (time + DISPLAY_TZ_OFFSET_SECONDS) as UTCTimestamp; // hora local (UTC-5)
 
 /**
  * Gráfico de velas (TradingView Lightweight Charts v5) con:

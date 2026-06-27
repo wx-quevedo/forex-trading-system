@@ -1,5 +1,19 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import ProgressModal from '@/Components/ProgressModal';
 import type { Optimization, OptimizationResult } from '@/types';
+
+type OptSortKey = 'in_return' | 'out_return' | 'total_trades' | 'robustness';
+
+function OptTh({ k, label, right, sort, onSort }: { k: OptSortKey; label: string; right?: boolean; sort: { key: OptSortKey; dir: 'asc' | 'desc' } | null; onSort: (k: OptSortKey) => void }) {
+    return (
+        <th className={`px-3 py-2 font-medium ${right ? 'text-right' : ''}`}>
+            <button type="button" onClick={() => onSort(k)} className={`inline-flex items-center gap-1 hover:text-text-primary ${right ? 'flex-row-reverse' : ''}`}>
+                {label}
+                <span className="text-[8px] leading-none text-accent">{sort?.key === k ? (sort.dir === 'asc' ? '▲' : '▼') : ''}</span>
+            </button>
+        </th>
+    );
+}
 
 interface Props {
     strategyType: string;
@@ -9,6 +23,8 @@ interface Props {
     indicators: Record<string, number | string>;
     risk: Record<string, number>;
     onLoad: (params: Record<string, number | string>) => void;
+    alwaysOpen?: boolean;
+    initialBalance?: number;
 }
 
 const VERDICT: Record<string, { label: string; cls: string }> = {
@@ -23,11 +39,19 @@ const paramsLabel = (p: Record<string, number | string>) =>
         .map(([k, v]) => `${k.replace(/_/g, ' ')}=${v}`)
         .join(', ');
 
-export default function OptimizationPanel({ strategyType, pair, timeframe, period, indicators, risk, onLoad }: Props) {
-    const [open, setOpen] = useState(false);
+export default function OptimizationPanel({ strategyType, pair, timeframe, period, indicators, risk, onLoad, alwaysOpen, initialBalance }: Props) {
+    const [open, setOpen] = useState(Boolean(alwaysOpen));
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState<Optimization | null>(null);
+    const [sort, setSort] = useState<{ key: OptSortKey; dir: 'asc' | 'desc' } | null>(null);
+    const toggleSort = (key: OptSortKey) => setSort((p) => (p && p.key === key ? { key, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
+    const sortedResults = useMemo(() => {
+        if (!data) return [];
+        if (!sort) return data.results; // por defecto: orden de robustez del backend
+        const { key, dir } = sort;
+        return [...data.results].sort((a, b) => (dir === 'asc' ? a[key] - b[key] : b[key] - a[key]));
+    }, [data, sort]);
 
     const run = async () => {
         setLoading(true);
@@ -41,6 +65,7 @@ export default function OptimizationPanel({ strategyType, pair, timeframe, perio
                 date_to: period.date_to,
                 indicators,
                 risk,
+                initial_balance: initialBalance,
             });
             setData(res as Optimization);
         } catch (e: unknown) {
@@ -52,18 +77,21 @@ export default function OptimizationPanel({ strategyType, pair, timeframe, perio
     };
 
     return (
-        <section className="rounded-lg border border-border bg-bg-surface">
-            <button
-                type="button"
-                onClick={() => setOpen((o) => !o)}
-                className="flex w-full items-center justify-between px-4 py-3 text-left"
-            >
-                <span className="text-sm font-semibold">Optimización automática (robusta, anti-overfitting)</span>
-                <span className="text-text-secondary">{open ? '−' : '+'}</span>
-            </button>
+        <section className={alwaysOpen ? '' : 'rounded-lg border border-border bg-bg-surface'}>
+            {loading && <ProgressModal title="Optimizando…" detail="Barriendo combinaciones y validando out-of-sample (puede tardar)." />}
+            {!alwaysOpen && (
+                <button
+                    type="button"
+                    onClick={() => setOpen((o) => !o)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left"
+                >
+                    <span className="text-sm font-semibold">Optimización automática (robusta, anti-overfitting)</span>
+                    <span className="text-text-secondary">{open ? '−' : '+'}</span>
+                </button>
+            )}
 
             {open && (
-                <div className="border-t border-border p-4">
+                <div className={alwaysOpen ? 'p-4' : 'border-t border-border p-4'}>
                     <p className="mb-3 text-xs text-text-secondary">
                         Barre combinaciones y las valida en un tramo que el optimizador NO vio (out-of-sample).
                         Ordena por <span className="text-text-primary">robustez</span> (consistencia in↔out), no por retorno máximo.
@@ -91,16 +119,16 @@ export default function OptimizationPanel({ strategyType, pair, timeframe, perio
                                     <thead className="sticky top-0 bg-bg-elevated">
                                         <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
                                             <th className="px-3 py-2 font-medium">Combinación</th>
-                                            <th className="px-3 py-2 font-medium text-right">In-sample</th>
-                                            <th className="px-3 py-2 font-medium text-right">Out-sample</th>
-                                            <th className="px-3 py-2 font-medium text-right">Ops</th>
-                                            <th className="px-3 py-2 font-medium">Robustez</th>
+                                            <OptTh k="in_return" label="In-sample" right sort={sort} onSort={toggleSort} />
+                                            <OptTh k="out_return" label="Out-sample" right sort={sort} onSort={toggleSort} />
+                                            <OptTh k="total_trades" label="Ops" right sort={sort} onSort={toggleSort} />
+                                            <OptTh k="robustness" label="Robustez" sort={sort} onSort={toggleSort} />
                                             <th className="px-3 py-2 font-medium">Veredicto</th>
                                             <th className="px-3 py-2" />
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {data.results.map((r: OptimizationResult, i) => {
+                                        {sortedResults.map((r: OptimizationResult, i) => {
                                             const v = VERDICT[r.verdict];
                                             return (
                                                 <tr key={i} className="border-b border-border/40 last:border-0">

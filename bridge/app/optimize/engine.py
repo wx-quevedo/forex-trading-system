@@ -122,6 +122,7 @@ def optimize(
     timeframe: str = "H1",
     risk: dict[str, Any] | None = None,
     split: float = 0.7,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     n = len(candles)
     if n < 120:
@@ -135,8 +136,8 @@ def optimize(
     raw: list[dict[str, Any]] = []
     for params in combos:
         try:
-            bt_in = run_backtest(strategy_type, params, in_candles, symbol=symbol, timeframe=timeframe, risk=risk)
-            bt_out = run_backtest(strategy_type, params, out_candles, symbol=symbol, timeframe=timeframe, risk=risk)
+            bt_in = run_backtest(strategy_type, params, in_candles, symbol=symbol, timeframe=timeframe, risk=risk, config=config)
+            bt_out = run_backtest(strategy_type, params, out_candles, symbol=symbol, timeframe=timeframe, risk=risk, config=config)
         except Exception:  # noqa: BLE001 - una combinación inválida no debe abortar todo
             continue
         m_in, m_out = bt_in["metrics"], bt_out["metrics"]

@@ -44,8 +44,11 @@ def run_backtest(
     cfg = {
         "initial_balance": 10000.0,
         "pip_value_per_lot": 10.0,   # USD por pip por 1.0 lote (aprox majors USD)
-        "spread_pips": 0.0,
-        "commission_per_lot": 0.0,   # round-turn
+        "spread_pips": 0.0,          # COSTO real del broker (lo pasa el router por símbolo)
+        "commission_per_lot": 0.0,   # round-turn, por lote
+        "swap_long_pts": 0.0,        # swap overnight en puntos (long), del símbolo
+        "swap_short_pts": 0.0,       # swap overnight en puntos (short), del símbolo
+        "point": 0.0,                # tamaño del punto del símbolo (para el swap)
         "default_volume": 0.01,
         **(config or {}),
     }
@@ -56,8 +59,14 @@ def run_backtest(
 
     pip = pip_size(symbol)
     pip_value = float(cfg["pip_value_per_lot"])
-    spread = float(cfg["spread_pips"]) * pip
+    spread_pips = float(cfg["spread_pips"])
+    commission_per_lot = float(cfg["commission_per_lot"])
     initial = float(cfg["initial_balance"])
+    # Valor de 1 punto de swap por lote (puntos -> dinero), ratio punto/pip (~0.1).
+    point = float(cfg["point"]) or pip / 10.0
+    swap_value_per_pt = (point / pip) * pip_value if pip else 0.0
+    swap_long_pts = float(cfg["swap_long_pts"])
+    swap_short_pts = float(cfg["swap_short_pts"])
 
     strategy = build_strategy(type_, params)
     signals = signal_series(strategy, df)
@@ -84,9 +93,20 @@ def run_backtest(
         nonlocal balance, position
         assert position is not None
         direction = position["dir"]
+        vol = position["volume"]
         diff = (exit_price - position["entry"]) if direction == "buy" else (position["entry"] - exit_price)
-        pnl = (diff / pip) * pip_value * position["volume"] - float(cfg["commission_per_lot"]) * position["volume"]
-        balance += pnl
+        gross = (diff / pip) * pip_value * vol
+
+        # Costos reales del broker.
+        spread_cost = spread_pips * pip_value * vol      # spread pagado en la entrada
+        commission_cost = commission_per_lot * vol
+        nights = max(0, int(exit_time) // 86400 - int(position["entry_time"]) // 86400)
+        swap_pts = swap_long_pts if direction == "buy" else swap_short_pts
+        swap = nights * swap_pts * swap_value_per_pt * vol  # signo del broker (suele ser costo)
+        costs = spread_cost + commission_cost - swap        # swap puede sumar o restar
+        net = gross - costs
+
+        balance += net
         trades.append(
             {
                 "entry_time": int(position["entry_time"]),
@@ -94,10 +114,13 @@ def run_backtest(
                 "direction": direction,
                 "entry_price": round(position["entry"], 6),
                 "exit_price": round(exit_price, 6),
-                "volume": position["volume"],
+                "volume": vol,
                 "sl": round(position["sl"], 6) if position["sl"] is not None else None,
                 "tp": round(position["tp"], 6) if position["tp"] is not None else None,
-                "pnl": round(pnl, 2),
+                "pnl": round(net, 2),          # NETO (con costos) — el realista
+                "pnl_gross": round(gross, 2),  # BRUTO (sin costos)
+                "costs": round(costs, 2),
+                "nights": nights,
                 "exit_reason": reason,
                 "balance": round(balance, 2),
             }
@@ -106,8 +129,7 @@ def run_backtest(
 
     def open_position(direction: str, i: int) -> None:
         nonlocal position
-        raw = closes[i]
-        entry = raw + spread / 2 if direction == "buy" else raw - spread / 2
+        entry = closes[i]  # entrada al precio medio; el spread se cobra como costo al cerrar
         if direction == "buy":
             sl = entry - sl_pips * pip if sl_pips else None
             tp = entry + tp_pips * pip if tp_pips else None
@@ -180,6 +202,8 @@ def _compute_metrics(
     gross_profit = float(pnls[pnls > 0].sum()) if total else 0.0
     gross_loss = float(-pnls[pnls < 0].sum()) if total else 0.0
     net = float(pnls.sum()) if total else 0.0
+    gross = float(sum(t.get("pnl_gross", t["pnl"]) for t in trades)) if total else 0.0
+    total_costs = round(gross - net, 2)
 
     eq = np.array([p["equity"] for p in equity_curve], dtype=float)
     peak = np.maximum.accumulate(eq) if len(eq) else np.array([initial])
@@ -222,9 +246,12 @@ def _compute_metrics(
         "win_rate": round(wins / total, 4) if total else 0.0,
         "profit_factor": round(gross_profit / gross_loss, 3) if gross_loss > 0 else None,
         "net_pnl": round(net, 2),
+        "gross_pnl": round(gross, 2),
+        "total_costs": total_costs,
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),
         "return_pct": round(net / initial * 100, 2) if initial else 0.0,
+        "return_pct_gross": round(gross / initial * 100, 2) if initial else 0.0,
         "final_balance": round(initial + net, 2),
         "max_drawdown_abs": round(max_dd_abs, 2),
         "max_drawdown_pct": round(max_dd_pct, 2),

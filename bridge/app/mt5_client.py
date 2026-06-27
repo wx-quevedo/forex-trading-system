@@ -193,8 +193,104 @@ class MT5Client:
             "digits": int(info.digits),
             "point": float(info.point),
             "spread": int(info.spread),
+            "swap_long": float(info.swap_long),
+            "swap_short": float(info.swap_short),
             "trade_mode": int(info.trade_mode),
             "visible": bool(info.visible),
+        }
+
+    def symbol_session(self, symbol: str) -> dict[str, Any]:
+        """Estado de mercado del símbolo (informativo): abierto/cerrado ahora + próximo cambio.
+
+        'abierto' se determina por la frescura del último tick (fiable y simple);
+        el próximo cambio usa el horario semanal (forex cierra el finde; cripto ~24/7).
+        Horas devueltas en UTC real.
+        """
+        self.ensure_connected()
+        self._ensure_symbol(symbol)
+        info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        off = self.server_offset()
+        now = datetime.now(tz=timezone.utc)
+        now_ts = now.timestamp()
+
+        last_real = (int(tick.time) - off) if tick and tick.time else None
+        age = (now_ts - last_real) if last_real else None
+        is_open = age is not None and age < 180  # tick reciente => mercado activo
+
+        path = (info.path if info else "") or ""
+        is_crypto = path.lower().startswith("crypto")
+
+        next_change = None
+        next_type = None
+        if is_crypto:
+            note = "Cripto: opera prácticamente 24/7."
+        else:
+            # Forex/índices: aproximación de fin de semana (abre dom ~21:00, cierra vie ~21:00 UTC).
+            wd, h = now.weekday(), now.hour  # lun=0 .. dom=6
+            from datetime import timedelta
+
+            def at(d, hour):
+                return d.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+            if is_open:
+                # próximo cierre: viernes 21:00 UTC
+                days = (4 - wd) % 7
+                fri = at(now + timedelta(days=days), 21)
+                if fri <= now:
+                    fri = fri + timedelta(days=7)
+                next_change, next_type = fri.timestamp(), "close"
+                note = "Mercado abierto."
+            else:
+                # próxima apertura: domingo 21:00 UTC
+                days = (6 - wd) % 7
+                sun = at(now + timedelta(days=days), 21)
+                if sun <= now:
+                    sun = sun + timedelta(days=7)
+                next_change, next_type = sun.timestamp(), "open"
+                note = "Mercado cerrado (fin de semana o fuera de sesión)."
+
+        return {
+            "symbol": symbol,
+            "open": bool(is_open),
+            "last_tick_age_seconds": round(age) if age is not None else None,
+            "next_change": int(next_change) if next_change else None,
+            "next_change_type": next_type,
+            "note": note,
+        }
+
+    def server_offset(self) -> int:
+        """Segundos que el servidor del broker va por delante de UTC real.
+
+        XM usa EET/EEST (+2 invierno, +3 verano; DST UE: último domingo de marzo a
+        las 01:00 UTC → último domingo de octubre 01:00 UTC). Los timestamps de MT5
+        vienen en hora del servidor tratada como UTC; restando este offset quedan en
+        UTC real (consistente con los ISO que genera el runner)."""
+        import calendar
+
+        now = datetime.now(tz=timezone.utc)
+        y = now.year
+
+        def last_sunday(month: int) -> int:
+            return max(week[6] for week in calendar.monthcalendar(y, month) if week[6])
+
+        start = datetime(y, 3, last_sunday(3), 1, tzinfo=timezone.utc)
+        end = datetime(y, 10, last_sunday(10), 1, tzinfo=timezone.utc)
+        return 3 * 3600 if start <= now < end else 2 * 3600
+
+    def symbol_costs(self, symbol: str) -> dict[str, Any]:
+        """Costos reales del broker para el backtest: spread (en pips), swap y punto."""
+        self.ensure_connected()
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return {}
+        pip = 0.01 if symbol.upper().endswith("JPY") else 0.0001
+        spread_pips = (info.spread * info.point) / pip if pip else 0.0
+        return {
+            "spread_pips": round(spread_pips, 3),
+            "swap_long_pts": float(info.swap_long),
+            "swap_short_pts": float(info.swap_short),
+            "point": float(info.point),
         }
 
     def _ensure_symbol(self, symbol: str) -> None:
@@ -272,6 +368,8 @@ class MT5Client:
                 mt5_error=mt5.last_error(),
             )
         data = _to_jsonable(tick._asdict())
+        if "time" in data:
+            data["time"] = int(data["time"]) - self.server_offset()  # hora servidor → UTC real
         data["symbol"] = symbol
         return data
 
@@ -313,7 +411,13 @@ class MT5Client:
                 code=409,
                 mt5_error=mt5.last_error(),
             )
-        return _rates_to_list(rates)
+        out = _rates_to_list(rates)
+        # Normalizar de hora del servidor a UTC real.
+        off = self.server_offset()
+        for c in out:
+            c["time"] = int(c["time"]) - off
+            c["datetime"] = datetime.fromtimestamp(c["time"], tz=timezone.utc).isoformat()
+        return out
 
     # -- posiciones / órdenes / historial ----------------------------------
     def positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
@@ -325,7 +429,14 @@ class MT5Client:
             if err and err[0] != 1:  # 1 == RES_S_OK
                 raise MT5Error("Error obteniendo posiciones.", mt5_error=err)
             return []
-        return [_to_jsonable(p._asdict()) for p in pos]
+        off = self.server_offset()
+        out = []
+        for p in pos:
+            d = _to_jsonable(p._asdict())
+            if "time" in d:
+                d["time"] = int(d["time"]) - off  # hora servidor → UTC real
+            out.append(d)
+        return out
 
     def closed_position_pnl(self, ticket: int) -> dict[str, Any] | None:
         """PnL realizado de una posición ya cerrada (usado por el bot para

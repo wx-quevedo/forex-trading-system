@@ -35,6 +35,11 @@ async def get_symbol(symbol: str):
     return client.symbol_info(symbol)
 
 
+@router.get("/symbol/{symbol}/session", summary="Estado de mercado del símbolo (abierto/cerrado + próximo cambio)")
+async def get_symbol_session(symbol: str):
+    return client.symbol_session(symbol)
+
+
 @router.get("/positions", summary="positions_get() — posiciones abiertas")
 async def get_positions(symbol: str | None = Query(default=None)):
     return client.positions(symbol)

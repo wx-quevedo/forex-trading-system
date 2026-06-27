@@ -146,9 +146,12 @@ export interface BacktestMetrics {
     win_rate: number;
     profit_factor: number | null;
     net_pnl: number;
+    gross_pnl?: number;
+    total_costs?: number;
     gross_profit: number;
     gross_loss: number;
     return_pct: number;
+    return_pct_gross?: number;
     final_balance: number;
     max_drawdown_abs: number;
     max_drawdown_pct: number;
@@ -171,6 +174,9 @@ export interface BacktestTrade {
     sl: number | null;
     tp: number | null;
     pnl: number;
+    pnl_gross?: number;
+    costs?: number;
+    nights?: number;
     exit_reason: 'sl' | 'tp' | 'signal' | 'end';
     balance: number;
 }

@@ -23,6 +23,7 @@ class OptimizeRequest(BaseModel):
     date_from: datetime = Field(..., alias="from")
     date_to: datetime = Field(..., alias="to")
     risk: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(default_factory=dict)
     split: float = Field(default=0.7, ge=0.5, le=0.85)
 
     model_config = {"populate_by_name": True}
@@ -40,6 +41,8 @@ async def optimize_run(req: OptimizeRequest):
             timeframe=req.timeframe,
             risk=req.risk,
             split=req.split,
+            # costos reales + config del usuario (p.ej. capital inicial). Veredictos sobre PnL neto.
+            config={**client.symbol_costs(req.symbol), **(req.config or {})},
         )
     except ValueError as exc:
         raise MT5Error(str(exc), code=422) from exc

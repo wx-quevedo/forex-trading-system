@@ -71,6 +71,7 @@ Route::middleware('auth')->group(function () {
         Route::get('/market/candles/{symbol}', [MarketController::class, 'candles']);
         Route::get('/market/price/{symbol}', [MarketController::class, 'price']);
         Route::get('/market/symbol/{symbol}', [MarketController::class, 'symbol']);
+        Route::get('/market/session/{symbol}', [MarketController::class, 'session']);
         Route::get('/market/positions', [MarketController::class, 'positions']);
     });
 });

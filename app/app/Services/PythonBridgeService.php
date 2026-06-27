@@ -88,6 +88,11 @@ class PythonBridgeService
         return $this->request('GET', '/symbol/' . rawurlencode($symbol));
     }
 
+    public function symbolSession(string $symbol): array
+    {
+        return $this->request('GET', '/symbol/' . rawurlencode($symbol) . '/session');
+    }
+
     /**
      * Nombres de símbolos operables del broker (excluye las ~1300 acciones para
      * un selector usable): Forex, derivados, cripto e índices. Cacheado 1 hora.
@@ -252,11 +257,11 @@ class PythonBridgeService
 
     // --- Optimización automática (Fase 8A) -------------------------------
     /** @param array<string, mixed> $params @param array<string, mixed> $risk */
-    public function optimize(string $type, array $params, string $symbol, string $timeframe, string $from, string $to, array $risk = [], float $split = 0.7): array
+    public function optimize(string $type, array $params, string $symbol, string $timeframe, string $from, string $to, array $risk = [], float $split = 0.7, array $config = []): array
     {
         return $this->request('POST', '/optimize', ['json' => [
             'type' => $type, 'params' => $params, 'symbol' => $symbol, 'timeframe' => $timeframe,
-            'from' => $from, 'to' => $to, 'risk' => $risk, 'split' => $split,
+            'from' => $from, 'to' => $to, 'risk' => $risk, 'split' => $split, 'config' => (object) $config,
         ]], timeout: 300); // el barrido corre decenas de backtests.
     }
 }

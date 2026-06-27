@@ -8,6 +8,7 @@ import {
     type UTCTimestamp,
 } from 'lightweight-charts';
 import type { BacktestTrade, Candle } from '@/types';
+import { DISPLAY_TZ_OFFSET_SECONDS } from '@/lib/tz';
 
 interface Props {
     candles: Candle[];
@@ -24,7 +25,7 @@ const C = {
     down: '#ef5350',
 };
 
-const t = (time: number) => time as UTCTimestamp;
+const t = (time: number) => (time + DISPLAY_TZ_OFFSET_SECONDS) as UTCTimestamp; // hora local (UTC-5)
 
 /** Velas del backtest con marcadores de entrada/salida de cada trade. */
 export default function BacktestChart({ candles, trades, height = 420 }: Props) {

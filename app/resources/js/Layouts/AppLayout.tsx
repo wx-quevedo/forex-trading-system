@@ -11,7 +11,7 @@ const NAV = [
     { href: '/bot', label: 'Bot' },
 ];
 
-export default function AppLayout({ children, title }: PropsWithChildren<{ title?: string }>) {
+export default function AppLayout({ children, title, wide }: PropsWithChildren<{ title?: string; wide?: boolean }>) {
     const { props, url } = usePage<SharedProps>();
     const user = props.auth.user;
 
@@ -89,7 +89,7 @@ export default function AppLayout({ children, title }: PropsWithChildren<{ title
                 </div>
             </header>
 
-            <main className="mx-auto max-w-[1600px] px-6 py-6">
+            <main className={`mx-auto px-6 py-6 ${wide ? 'max-w-none' : 'max-w-[1600px]'}`}>
                 {title && <h1 className="mb-5 text-lg font-semibold tracking-tight">{title}</h1>}
                 {children}
             </main>

@@ -32,6 +32,8 @@ class BacktestRequest(BaseModel):
 async def backtest_run(req: BacktestRequest):
     # Obtiene las velas históricas del rango y corre el backtester.
     candles = client.candles(req.symbol, req.timeframe, date_from=req.date_from, date_to=req.date_to)
+    # Costos reales del broker (spread/swap/punto del símbolo) → PnL neto realista.
+    config = {**client.symbol_costs(req.symbol), **(req.config or {})}
     try:
         result = run_backtest(
             req.type,
@@ -40,7 +42,7 @@ async def backtest_run(req: BacktestRequest):
             symbol=req.symbol,
             timeframe=req.timeframe,
             risk=req.risk,
-            config=req.config,
+            config=config,
         )
     except ValueError as exc:
         raise MT5Error(str(exc), code=422) from exc
