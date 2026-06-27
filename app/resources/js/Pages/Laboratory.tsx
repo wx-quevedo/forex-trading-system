@@ -109,16 +109,24 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         return () => { alive = false; };
     }, [pair]);
 
-    // Combo enviado desde el Explorador (sessionStorage): carga una configuración
-    // completa (tipo/par/tf/params/SL/TP/riesgo/capital) para inspeccionarla aquí.
+    // Combo enviado desde el Explorador: carga una configuración completa
+    // (tipo/par/tf/params/SL/TP/riesgo/capital/periodo) para inspeccionarla aquí.
+    // Fuente: parámetro de URL `?combo=` (al abrir en pestaña nueva) o, si no,
+    // sessionStorage (navegación en la misma pestaña).
     useEffect(() => {
-        const raw = sessionStorage.getItem('forexbot.lab_combo');
+        const fromUrl = new URLSearchParams(window.location.search).get('combo');
+        const raw = fromUrl ?? sessionStorage.getItem('forexbot.lab_combo');
         if (!raw) return;
         sessionStorage.removeItem('forexbot.lab_combo');
+        if (fromUrl) {
+            // Limpia la URL para que un refresco no recargue el combo.
+            window.history.replaceState({}, '', '/laboratory');
+        }
         try {
-            const c = JSON.parse(raw) as {
+            const c = JSON.parse(fromUrl ? decodeURIComponent(raw) : raw) as {
                 type?: string; pair?: string; timeframe?: string;
-                indicators?: Record<string, number | string>; risk?: Record<string, number>; capital?: number;
+                indicators?: Record<string, number | string>; risk?: Record<string, number>;
+                capital?: number; period?: { date_from: string; date_to: string };
             };
             if (c.type) setType(c.type);
             if (c.pair) setPair(c.pair);
@@ -126,6 +134,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
             if (c.indicators) setIndicators(c.indicators);
             if (c.risk) setRisk((p) => ({ ...p, ...c.risk }));
             if (c.capital) setCapitalPref(c.capital);
+            if (c.period?.date_from && c.period?.date_to) setPeriod(c.period);
             if (c.indicators) {
                 setHighlight(new Set(Object.keys(c.indicators)));
                 setTimeout(() => setHighlight(new Set()), 2000);
@@ -293,16 +302,24 @@ function MetricsStrip({ metrics: m, capital }: { metrics: BacktestMetrics | null
         { label: 'Max DD', value: `${m.max_drawdown_pct.toFixed(2)}%`, help: METRIC_HELP.dd, color: 'text-loss' },
     ];
     return (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 xl:grid-cols-10">
-            {cards.map((c) => (
-                <div key={c.label} className="rounded-lg border border-border bg-bg-surface px-3 py-2">
-                    <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                        {c.label}
-                        <InfoTooltip text={c.help} />
-                    </div>
-                    <div className={`font-mono text-base font-semibold ${c.color ?? 'text-text-primary'}`}>{c.value}</div>
+        <div className="space-y-2">
+            {m.blown && (
+                <div className="rounded-md border border-loss/50 bg-loss/10 px-3 py-1.5 text-xs font-semibold text-loss">
+                    Cuenta quebrada: la estrategia perdió todo el capital (capital final $0, −100%). No es operable —
+                    una cuenta que quiebra no se recupera en la realidad.
                 </div>
-            ))}
+            )}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 xl:grid-cols-10">
+                {cards.map((c) => (
+                    <div key={c.label} className="rounded-lg border border-border bg-bg-surface px-3 py-2">
+                        <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                            {c.label}
+                            <InfoTooltip text={c.help} />
+                        </div>
+                        <div className={`font-mono text-base font-semibold ${c.color ?? 'text-text-primary'}`}>{c.value}</div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }

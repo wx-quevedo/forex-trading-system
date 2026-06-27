@@ -36,6 +36,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/explorer/results', [ExplorerController::class, 'results'])->name('explorer.results');
     Route::post('/explorer/cancel', [ExplorerController::class, 'cancel'])->name('explorer.cancel');
     Route::get('/explorer/system-stats', [ExplorerController::class, 'systemStats'])->name('explorer.system-stats');
+    Route::post('/explorer/searches', [ExplorerController::class, 'saveSearch'])->name('explorer.searches.save');
+    Route::get('/explorer/searches/{search}', [ExplorerController::class, 'showSearch'])->name('explorer.searches.show');
+    Route::delete('/explorer/searches/{search}', [ExplorerController::class, 'deleteSearch'])->name('explorer.searches.delete');
 
     // --- Módulo de Estrategias ---
     Route::post('/strategies/{strategy}/version', [StrategyController::class, 'version'])->name('strategies.version');

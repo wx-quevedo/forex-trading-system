@@ -10,7 +10,7 @@ interface Props {
 // Lista curada de los más usados (se muestran solo los que el broker realmente ofrece).
 const COMMON = [
     'EURUSD#', 'GBPUSD#', 'USDJPY#', 'USDCHF#', 'USDCAD#', 'AUDUSD#', 'NZDUSD#',
-    'XAUUSD#', 'GOLD#', 'BTCUSD#', 'ETHUSD#', 'US500Cash#', 'US100Cash#', 'US30Cash#',
+    'GOLD#', 'XAUEUR#', 'BTCUSD#', 'ETHUSD#', 'US500Cash#', 'US100Cash#', 'US30Cash#',
 ];
 
 /**

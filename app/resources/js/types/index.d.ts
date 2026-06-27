@@ -162,6 +162,8 @@ export interface BacktestMetrics {
     avg_win: number;
     avg_loss: number;
     pnl_by_month: Record<string, number>;
+    blown?: boolean;
+    blown_at?: number | null;
 }
 
 export interface BacktestTrade {
@@ -352,6 +354,14 @@ export interface Optimization {
 }
 
 // --- Buscador de estrategias (Fase 8E) ---
+export interface ExploreCacheStats {
+    entries: number;
+    size_bytes: number;
+    size_mb: number;
+    engine_version: number;
+    path: string;
+}
+
 export interface ExploreMeta {
     grid_sizes: Record<string, number>;
     sl_choices: number[];
@@ -359,8 +369,19 @@ export interface ExploreMeta {
     risk_choices: number[];
     sweep_timeframes: string[];
     max_configs: number;
+    warn_configs: number;
     cpu_count: number;
     default_workers: number;
+    engine_version: number;
+    cache: ExploreCacheStats;
+}
+
+export interface SavedSearch {
+    id: number;
+    name: string;
+    total: number;
+    inside: number;
+    created_at: string;
 }
 
 export interface SystemStats {
@@ -392,6 +413,7 @@ export interface ExploreResultRow {
     profit_factor: number | null;
     max_drawdown_pct: number;
     total_trades: number;
+    blown: boolean;
     in_return: number;
     out_return: number;
     robustness: number;
@@ -421,6 +443,9 @@ export interface ExploreStatus {
     t_mt5_seconds: number;
     t_compute_seconds: number;
     candle_fetches: number;
+    // Caché.
+    cache_hits: number;
+    cache_misses: number;
     results?: ExploreResultRow[];
 }
 

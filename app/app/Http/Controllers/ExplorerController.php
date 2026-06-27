@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StrategyRequest;
+use App\Models\ExploreSearch;
 use App\Services\BridgeException;
 use App\Services\ManualTuningService;
 use App\Services\PythonBridgeService;
@@ -55,6 +56,9 @@ class ExplorerController extends Controller
                 'date_from' => now()->subMonths(6)->toDateString(),
                 'date_to' => now()->toDateString(),
             ],
+            'savedSearches' => ExploreSearch::query()
+                ->latest()
+                ->get(['id', 'name', 'total', 'inside', 'created_at']),
         ]);
     }
 
@@ -98,6 +102,49 @@ class ExplorerController extends Controller
     public function systemStats(): JsonResponse
     {
         return $this->proxy(fn () => $this->bridge->systemStats());
+    }
+
+    // --- Búsquedas guardadas (Parte 2) ----------------------------------
+    public function saveSearch(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:160'],
+            'config' => ['required', 'array'],
+            'results' => ['required', 'array'],
+            'total' => ['nullable', 'integer', 'min:0'],
+            'inside' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        $search = ExploreSearch::create([
+            'name' => $data['name'],
+            'config' => $data['config'],
+            'results' => $data['results'],
+            'total' => $data['total'] ?? count($data['results']),
+            'inside' => $data['inside'] ?? 0,
+        ]);
+
+        return response()->json([
+            'id' => $search->id, 'name' => $search->name,
+            'total' => $search->total, 'inside' => $search->inside,
+            'created_at' => $search->created_at,
+        ]);
+    }
+
+    /** Devuelve una búsqueda guardada con su reporte completo (para reabrirla). */
+    public function showSearch(ExploreSearch $search): JsonResponse
+    {
+        return response()->json([
+            'id' => $search->id,
+            'name' => $search->name,
+            'config' => $search->config,
+            'results' => $search->results,
+        ]);
+    }
+
+    public function deleteSearch(ExploreSearch $search): JsonResponse
+    {
+        $search->delete();
+        return response()->json(['ok' => true]);
     }
 
     public function status(): JsonResponse

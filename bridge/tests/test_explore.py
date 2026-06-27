@@ -6,9 +6,11 @@ import time
 from datetime import datetime, timezone
 
 import numpy as np
+import pytest
 
 from app.explore import estimate_configs, grid_size
-from app.explore.engine import ExploreJob
+from app.explore.cache import ExploreCache, make_cache_key
+from app.explore.engine import STALE_SECONDS, ExploreJob
 
 
 def _wave_candles(n=420):
@@ -56,7 +58,8 @@ def _req(**over):
         "tp_choices": [40],
         "risk_choices": [1.0],
         "workers": 1,
-        "inprocess": True,  # tests: cómputo en el hilo, sin spawnear procesos
+        "inprocess": True,   # tests: cómputo en el hilo, sin spawnear procesos
+        "use_cache": False,  # tests aislados de la caché compartida (salvo los de caché)
     }
     base.update(over)
     return base
@@ -106,6 +109,64 @@ def test_skips_groups_with_insufficient_candles():
     assert snap["status"] == "done"
     assert snap["done"] == snap["total"]
     assert snap["results_count"] == 0
+
+
+def test_orphan_job_auto_releases_and_allows_new_search():
+    """Un job marcado 'running' pero sin latido reciente (huérfano) NO bloquea: se
+    considera muerto y una nueva búsqueda puede arrancar (lo supera)."""
+    job = ExploreJob()
+    with job._lock:  # simular huérfano: running sin latido
+        job.status = "running"
+        job._last_beat = time.monotonic() - (STALE_SECONDS + 30)
+    assert job.is_stale()
+    assert not job.is_running()
+    assert job.snapshot()["stale"] is True
+    # Una búsqueda nueva arranca pese al huérfano previo.
+    snap = _run_job(job, _req(), FakeClient(_wave_candles(440)))
+    assert snap["status"] == "done"
+    assert snap["stale"] is False
+
+
+def test_fresh_running_job_blocks_new_search():
+    """Un job VIVO (con latido reciente) sí bloquea una nueva búsqueda."""
+    job = ExploreJob()
+    with job._lock:
+        job.status = "running"
+        job._last_beat = time.monotonic()
+    assert job.is_running()
+    with pytest.raises(RuntimeError):
+        job.start(_req(), FakeClient(_wave_candles(200)))
+
+
+def test_force_reset_clears_state():
+    job = ExploreJob()
+    with job._lock:
+        job.status = "running"
+        job._last_beat = time.monotonic()
+    snap = job.force_reset()
+    assert snap["status"] == "idle"
+    assert not job.is_running()
+
+
+def test_explorer_path_applies_risk_percent():
+    """En el PATH del Explorador (no el motor aislado), con capital suficiente, una
+    misma combinación con riesgo 0.5 vs 2.0 da resultados DISTINTOS (sizing por riesgo).
+    Capital alto para no toparse con el lote mínimo (0.01)."""
+    client = FakeClient(_wave_candles(500))
+    snap = _run_job(ExploreJob(), _req(capital=100000.0, risk_choices=[0.5, 2.0]), client)
+    assert snap["status"] == "done"
+    # Empareja por (params, sl, tp) las dos variantes de riesgo y compara su PnL.
+    by_combo: dict = {}
+    for r in snap["results"]:
+        k = (tuple(sorted(r["params"].items())), r["sl_pips"], r["tp_pips"])
+        by_combo.setdefault(k, {})[r["risk_percent"]] = r
+    compared = 0
+    for variants in by_combo.values():
+        if 0.5 in variants and 2.0 in variants and variants[0.5]["total_trades"] > 0:
+            lo, hi = variants[0.5], variants[2.0]
+            assert lo["net_pnl"] != hi["net_pnl"], "el riesgo% no afectó el PnL en el path del Explorador"
+            compared += 1
+    assert compared > 0, "no hubo combinaciones con trades para comparar"
 
 
 def _row_key(r):
@@ -164,3 +225,66 @@ def test_snapshot_reports_speed_and_workers():
     assert snap["elapsed_seconds"] >= 0
     assert snap["t_compute_seconds"] >= 0
     assert "speed_per_sec" in snap and "eta_seconds" in snap
+
+
+def test_cache_key_sensitive_to_all_factors():
+    base = dict(
+        symbol="EURUSD#", stype="rsi", tf="H1",
+        params={"period": 14, "oversold": 30, "overbought": 70},
+        sl=20, tp=40, rp=1.0,
+        cfg={"initial_balance": 10000, "spread_pips": 0.5, "commission_per_lot": 0,
+             "swap_long_pts": 0, "swap_short_pts": 0, "point": 1e-5},
+        date_from="2025-01-01", date_to="2025-06-01",
+    )
+    k0 = make_cache_key(**base)
+    assert k0 == make_cache_key(**base)  # determinista
+
+    def changed(**over):
+        d = dict(base); d.update(over); return make_cache_key(**d)
+
+    assert changed(symbol="GBPUSD#") != k0
+    assert changed(stype="macd") != k0
+    assert changed(tf="H4") != k0
+    assert changed(params={"period": 7, "oversold": 30, "overbought": 70}) != k0
+    assert changed(sl=30) != k0
+    assert changed(tp=60) != k0
+    assert changed(rp=2.0) != k0
+    assert changed(cfg={**base["cfg"], "initial_balance": 5000}) != k0
+    assert changed(cfg={**base["cfg"], "spread_pips": 1.0}) != k0
+    assert changed(date_to="2025-07-01") != k0
+
+
+def test_cache_hit_skips_recompute(tmp_path):
+    cache = ExploreCache(str(tmp_path / "c.db"))
+    candles = _wave_candles(440)
+    req = _req(use_cache=True)
+
+    # 1ª corrida: todo se calcula y se guarda.
+    s1 = _run_job(ExploreJob(cache=cache), req, FakeClient(candles))
+    assert s1["status"] == "done"
+    assert s1["cache_misses"] == s1["total"]
+    assert s1["cache_hits"] == 0
+
+    # 2ª corrida idéntica: TODO viene de caché (0 cálculos).
+    s2 = _run_job(ExploreJob(cache=cache), req, FakeClient(candles))
+    assert s2["status"] == "done"
+    assert s2["cache_hits"] == s2["total"]
+    assert s2["cache_misses"] == 0
+
+    # Resultados equivalentes (caché vs cálculo).
+    key = lambda r: (tuple(sorted(r["params"].items())), r["sl_pips"], r["tp_pips"], r["risk_percent"])
+    m1 = {key(r): r for r in s1["results"]}
+    m2 = {key(r): r for r in s2["results"]}
+    assert m1.keys() == m2.keys()
+    for k in m1:
+        assert m1[k]["return_pct"] == m2[k]["return_pct"]
+        assert m1[k]["verdict"] == m2[k]["verdict"]
+        assert m1[k]["robustness"] == m2[k]["robustness"]
+
+
+def test_cache_clear_and_stats(tmp_path):
+    cache = ExploreCache(str(tmp_path / "c.db"))
+    _run_job(ExploreJob(cache=cache), _req(use_cache=True), FakeClient(_wave_candles(440)))
+    assert cache.stats()["entries"] > 0
+    cache.clear()
+    assert cache.stats()["entries"] == 0

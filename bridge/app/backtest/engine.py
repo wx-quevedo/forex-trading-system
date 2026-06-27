@@ -57,13 +57,18 @@ def run_backtest(
     tp_pips = _num(risk.get("tp_pips"))
     risk_pct = _num(risk.get("risk_percent"))
 
-    pip = pip_size(symbol)
+    # Tamaño del pip: SIEMPRE 10 puntos del símbolo (forex fraccional 5/3 dígitos,
+    # metales, índices…). Así el oro (point 0.01 → pip 0.1) y demás se dimensionan
+    # bien, no con el 0.0001 fijo de forex. Sin punto del broker, heurística por nombre.
+    point = float(cfg["point"]) or 0.0
+    pip = (point * 10.0) if point > 0 else pip_size(symbol)
     pip_value = float(cfg["pip_value_per_lot"])
     spread_pips = float(cfg["spread_pips"])
     commission_per_lot = float(cfg["commission_per_lot"])
     initial = float(cfg["initial_balance"])
     # Valor de 1 punto de swap por lote (puntos -> dinero), ratio punto/pip (~0.1).
-    point = float(cfg["point"]) or pip / 10.0
+    if point <= 0:
+        point = pip / 10.0
     swap_value_per_pt = (point / pip) * pip_value if pip else 0.0
     swap_long_pts = float(cfg["swap_long_pts"])
     swap_short_pts = float(cfg["swap_short_pts"])
@@ -75,6 +80,10 @@ def run_backtest(
     position: dict[str, Any] | None = None
     trades: list[dict[str, Any]] = []
     equity_curve: list[dict[str, Any]] = []
+    # Regla de quiebra: si el capital toca 0, la cuenta se "quema" (blow up) y NO
+    # se opera más. El capital final nunca es negativo; no hay "recuperación".
+    blown = False
+    blown_time: int | None = None
 
     closes = df["close"].to_numpy()
     highs = df["high"].to_numpy()
@@ -90,7 +99,7 @@ def run_backtest(
         return float(cfg["default_volume"])
 
     def close_position(exit_price: float, exit_time: int, reason: str) -> None:
-        nonlocal balance, position
+        nonlocal balance, position, blown, blown_time
         assert position is not None
         direction = position["dir"]
         vol = position["volume"]
@@ -106,6 +115,16 @@ def run_backtest(
         costs = spread_cost + commission_cost - swap        # swap puede sumar o restar
         net = gross - costs
 
+        # Quiebra: no se puede perder más del capital disponible. Si esta operación
+        # llevaría el capital a 0 o menos, se topa la pérdida al saldo restante y la
+        # cuenta queda QUEMADA (no se opera más).
+        if balance + net <= 0:
+            net = -balance
+            exit_reason = "blown"
+            blown = True
+            blown_time = int(exit_time)
+        else:
+            exit_reason = reason
         balance += net
         trades.append(
             {
@@ -121,7 +140,7 @@ def run_backtest(
                 "pnl_gross": round(gross, 2),  # BRUTO (sin costos)
                 "costs": round(costs, 2),
                 "nights": nights,
-                "exit_reason": reason,
+                "exit_reason": exit_reason,
                 "balance": round(balance, 2),
             }
         )
@@ -157,26 +176,31 @@ def run_backtest(
                 elif tp is not None and lows[i] <= tp:
                     close_position(tp, times[i], "tp")
 
-        # 2) Actuar sobre la señal de esta vela (cerrada).
-        s = sig[i]
-        if s in ("buy", "sell"):
-            if position is not None and position["dir"] != s:
-                close_position(closes[i], times[i], "signal")
-            if position is None:
-                open_position(s, i)
+        # 2) Actuar sobre la señal de esta vela (cerrada). No si la cuenta quebró.
+        if not blown:
+            s = sig[i]
+            if s in ("buy", "sell"):
+                if position is not None and position["dir"] != s:
+                    close_position(closes[i], times[i], "signal")
+                if position is None:
+                    open_position(s, i)
 
         # 3) Equity mark-to-market.
         equity = balance
-        if position is not None:
+        if position is not None and not blown:
             d = position["dir"]
             diff = (closes[i] - position["entry"]) if d == "buy" else (position["entry"] - closes[i])
             equity += (diff / pip) * pip_value * position["volume"]
         equity_curve.append({"time": int(times[i]), "equity": round(equity, 2)})
 
-    if position is not None:
+        # Cuenta quemada: se detiene la simulación, no hay "recuperación".
+        if blown:
+            break
+
+    if position is not None and not blown:
         close_position(closes[-1], times[-1], "end")
 
-    metrics = _compute_metrics(trades, equity_curve, initial, timeframe)
+    metrics = _compute_metrics(trades, equity_curve, initial, timeframe, blown, blown_time)
     return {
         "metrics": metrics,
         "trades": trades,
@@ -194,6 +218,8 @@ def _compute_metrics(
     equity_curve: list[dict[str, Any]],
     initial: float,
     timeframe: str,
+    blown: bool = False,
+    blown_time: int | None = None,
 ) -> dict[str, Any]:
     pnls = np.array([t["pnl"] for t in trades], dtype=float)
     total = len(pnls)
@@ -239,6 +265,14 @@ def _compute_metrics(
         month = pd.to_datetime(t["exit_time"], unit="s", utc=True).strftime("%Y-%m")
         pnl_by_month[month] = round(pnl_by_month.get(month, 0.0) + t["pnl"], 2)
 
+    # Cuenta quebrada: capital final 0, retorno y drawdown −100% (lo perdió todo).
+    final_balance = round(initial + net, 2)
+    return_pct = round(net / initial * 100, 2) if initial else 0.0
+    if blown:
+        final_balance = 0.0
+        return_pct = -100.0
+        max_dd_pct = -100.0
+
     return {
         "total_trades": total,
         "wins": wins,
@@ -250,9 +284,9 @@ def _compute_metrics(
         "total_costs": total_costs,
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),
-        "return_pct": round(net / initial * 100, 2) if initial else 0.0,
+        "return_pct": return_pct,
         "return_pct_gross": round(gross / initial * 100, 2) if initial else 0.0,
-        "final_balance": round(initial + net, 2),
+        "final_balance": final_balance,
         "max_drawdown_abs": round(max_dd_abs, 2),
         "max_drawdown_pct": round(max_dd_pct, 2),
         "sharpe": round(sharpe, 3),
@@ -262,6 +296,8 @@ def _compute_metrics(
         "avg_win": round(float(pnls[pnls > 0].mean()), 2) if wins else 0.0,
         "avg_loss": round(float(pnls[pnls <= 0].mean()), 2) if losses else 0.0,
         "pnl_by_month": pnl_by_month,
+        "blown": blown,
+        "blown_at": blown_time,
     }
 
 

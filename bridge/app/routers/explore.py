@@ -17,16 +17,19 @@ import os
 
 from ..auth import require_api_key
 from ..explore import (
+    ENGINE_VERSION,
     MAX_CONFIGS,
     RISK_CHOICES,
     SL_CHOICES,
     SWEEP_TIMEFRAMES,
     TP_CHOICES,
+    WARN_CONFIGS,
     default_workers,
     estimate_configs,
     grid_size,
     job,
 )
+from ..explore.engine import _default_cache
 from ..mt5_client import MT5Error, client
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -45,6 +48,7 @@ class ExploreRequest(BaseModel):
     tp_choices: list[float] = Field(default_factory=lambda: list(TP_CHOICES), min_length=1)
     risk_choices: list[float] = Field(default_factory=lambda: list(RISK_CHOICES), min_length=1)
     workers: int | None = Field(default=None, ge=1, le=64)
+    use_cache: bool = Field(default=True)
 
     model_config = {"populate_by_name": True}
 
@@ -67,8 +71,11 @@ async def explore_meta():
         "risk_choices": RISK_CHOICES,
         "sweep_timeframes": SWEEP_TIMEFRAMES,
         "max_configs": MAX_CONFIGS,
+        "warn_configs": WARN_CONFIGS,
         "cpu_count": os.cpu_count(),
         "default_workers": default_workers(),
+        "engine_version": ENGINE_VERSION,
+        "cache": _default_cache.stats(),
     }
 
 
@@ -108,6 +115,7 @@ async def explore_start(req: ExploreRequest):
         "tp_choices": req.tp_choices,
         "risk_choices": req.risk_choices,
         "workers": req.workers,
+        "use_cache": req.use_cache,
     }
     return job.start(payload, client)
 
@@ -126,3 +134,20 @@ async def explore_results():
 async def explore_cancel():
     job.cancel()
     return job.snapshot(include_results=False)
+
+
+@router.post("/explore/reset", summary="Libera a la fuerza el job (huérfano o en curso)")
+async def explore_reset():
+    """Resetea el estado del Explorador a libre. Útil para destrabar un job huérfano
+    tras una caída. Solo local (bridge atado a 127.0.0.1)."""
+    return job.force_reset()
+
+
+@router.get("/explore/cache", summary="Tamaño/estado de la caché de resultados")
+async def explore_cache_stats():
+    return _default_cache.stats()
+
+
+@router.post("/explore/cache/clear", summary="Vacía la caché de resultados")
+async def explore_cache_clear():
+    return _default_cache.clear()

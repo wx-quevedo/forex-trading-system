@@ -44,6 +44,10 @@ LOG_DIR = PANEL_DIR / "logs"
 STATE_FILE = PANEL_DIR / "panel_state.json"
 
 HEALTH_URL = "http://127.0.0.1:8000/health"
+EXPLORE_STATUS_URL = "http://127.0.0.1:8000/explore/status"
+EXPLORE_CANCEL_URL = "http://127.0.0.1:8000/explore/cancel"
+EXPLORE_RESET_URL = "http://127.0.0.1:8000/explore/reset"
+BRIDGE_ENV = BRIDGE_DIR / ".env"
 
 # Banderas de creación de proceso en Windows: sin ventana de consola + grupo
 # propio (para que el panel pueda gestionarlo y sobreviva al cierre del panel).
@@ -194,6 +198,44 @@ def fetch_health(timeout: float = 2.0) -> dict | None:
         return None
 
 
+def bridge_api_key() -> str | None:
+    """Lee BRIDGE_API_KEY del .env del bridge (los endpoints /explore lo exigen)."""
+    try:
+        for line in BRIDGE_ENV.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("BRIDGE_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
+API_KEY = bridge_api_key()
+
+
+def _bridge_request(url: str, method: str = "GET", timeout: float = 2.5) -> dict | None:
+    """Petición autenticada al bridge (X-API-Key). Devuelve JSON o None si falla."""
+    try:
+        data = b"" if method == "POST" else None
+        req = urllib.request.Request(url, data=data, method=method, headers={"X-API-Key": API_KEY or ""})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def fetch_explore_status(timeout: float = 2.5) -> dict | None:
+    return _bridge_request(EXPLORE_STATUS_URL, "GET", timeout)
+
+
+def explore_cancel() -> dict | None:
+    return _bridge_request(EXPLORE_CANCEL_URL, "POST", timeout=10)
+
+
+def explore_reset() -> dict | None:
+    return _bridge_request(EXPLORE_RESET_URL, "POST", timeout=10)
+
+
 def is_market_open(now: datetime | None = None) -> bool:
     """Heurística de horario forex (UTC): cerrado el fin de semana.
 
@@ -218,11 +260,35 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(pids: dict) -> None:
+def _write_state(data: dict) -> None:
     try:
-        STATE_FILE.write_text(json.dumps(pids), encoding="utf-8")
+        STATE_FILE.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
+
+
+def load_pids() -> dict:
+    data = load_state()
+    pids = data.get("pids")
+    if pids is None:  # esquema legado: el archivo era {key: pid}
+        pids = {k: v for k, v in data.items() if isinstance(v, int)}
+    return pids
+
+
+def save_pids(pids: dict) -> None:
+    data = load_state()
+    data["pids"] = pids
+    _write_state(data)
+
+
+def load_setting(key: str, default):
+    return load_state().get(key, default)
+
+
+def save_setting(key: str, value) -> None:
+    data = load_state()
+    data[key] = value
+    _write_state(data)
 
 
 # --------------------------------------------------------------------------- #
@@ -233,7 +299,7 @@ class ServiceManager:
         self.defs = {s["key"]: s for s in _service_defs()}
         # PIDs de procesos lanzados por el panel (adopta los previos si siguen vivos).
         self.pids: dict[str, int] = {}
-        for key, pid in load_state().items():
+        for key, pid in load_pids().items():
             if pid_alive(pid):
                 self.pids[key] = pid
         LOG_DIR.mkdir(exist_ok=True)
@@ -274,7 +340,7 @@ class ServiceManager:
         except Exception as exc:  # noqa: BLE001
             return False, f"Error al iniciar {svc['name']}: {exc}"
         self.pids[key] = proc.pid
-        save_state(self.pids)
+        save_pids(self.pids)
         return True, f"{svc['name']} iniciado (PID {proc.pid})."
 
     def stop(self, key: str) -> tuple[bool, str]:
@@ -291,7 +357,7 @@ class ServiceManager:
                 kill_tree(foreign)
                 killed = True
         self.pids.pop(key, None)
-        save_state(self.pids)
+        save_pids(self.pids)
         if killed:
             return True, f"{svc['name']} detenido."
         return True, f"{svc['name']} ya estaba detenido."
@@ -307,6 +373,16 @@ class ServiceManager:
 # --------------------------------------------------------------------------- #
 ORDER = ["bridge", "laravel", "reverb", "queue"]
 
+# Auto-recuperación (anti-bucle): máx N reintentos por servicio en una ventana,
+# con una espera mínima entre intentos.
+RECOVER_MAX = 3
+RECOVER_WINDOW = 300.0   # segundos: pasada la ventana se reinicia el contador
+RECOVER_COOLDOWN = 8.0   # segundos mínimos entre intentos (backoff)
+
+
+def load_color(pct: float) -> str:
+    return RED if pct > 85 else YELLOW if pct > 50 else GREEN
+
 
 class Dot(tk.Canvas):
     def __init__(self, master, r: int = 6):
@@ -315,6 +391,34 @@ class Dot(tk.Canvas):
 
     def set(self, color: str) -> None:
         self.itemconfig(self._id, fill=color)
+
+
+class CoreBar(tk.Canvas):
+    """Mini-barra vertical de uso de un núcleo lógico."""
+
+    def __init__(self, master, w: int = 13, h: int = 26):
+        super().__init__(master, width=w, height=h, bg=PANEL2, highlightthickness=0)
+        self._cw, self._ch = w, h  # ojo: _w está reservado por tkinter (path del widget)
+        self._fill = self.create_rectangle(0, h, w, h, fill=GREEN, outline="")
+
+    def set(self, pct: float) -> None:
+        filled = int(self._ch * min(100.0, max(0.0, pct)) / 100.0)
+        self.coords(self._fill, 0, self._ch - filled, self._cw, self._ch)
+        self.itemconfig(self._fill, fill=load_color(pct))
+
+
+class Bar(tk.Canvas):
+    """Barra horizontal de progreso (CPU/RAM total)."""
+
+    def __init__(self, master, w: int = 180, h: int = 10):
+        super().__init__(master, width=w, height=h, bg=PANEL2, highlightthickness=0)
+        self._cw, self._ch = w, h  # ojo: _w está reservado por tkinter (path del widget)
+        self._fill = self.create_rectangle(0, 0, 0, h, fill=GREEN, outline="")
+
+    def set(self, pct: float) -> None:
+        filled = int(self._cw * min(100.0, max(0.0, pct)) / 100.0)
+        self.coords(self._fill, 0, 0, filled, self._ch)
+        self.itemconfig(self._fill, fill=load_color(pct))
 
 
 class App:
@@ -328,13 +432,24 @@ class App:
 
         root.title("ForexBot Control Panel")
         root.configure(bg=BG)
-        root.geometry("640x680")
-        root.minsize(600, 640)
+        root.geometry("640x920")
+        root.minsize(600, 860)
 
         self.svc_dots: dict[str, Dot] = {}
         self.svc_btns: dict[str, dict[str, tk.Button]] = {}
         self.diag_dots: dict[str, Dot] = {}
         self.diag_labels: dict[str, tk.Label] = {}
+        self.job_status: dict | None = None  # último snapshot del Explorador
+        self.core_bars: list[CoreBar] = []
+
+        # Auto-recuperación: estado por servicio + servicios que "deberían" estar
+        # arriba (los que el usuario detuvo a mano se excluyen para no resucitarlos).
+        self.autorecover = tk.BooleanVar(value=bool(load_setting("autorecover", False)))
+        self.recovery: dict[str, dict] = {}
+        self.ever_up: set[str] = set()
+
+        # Primar el contador de CPU de psutil (la 1ª lectura siempre da 0).
+        psutil.cpu_percent(percpu=True)
 
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -377,9 +492,53 @@ class App:
         self._diag_row(dframe, "algo", "Algo Trading")
         self._diag_row(dframe, "market", "Mercado abierto")
 
+        # --- Trabajos del Explorador ---
+        self._section_title("TRABAJOS DEL EXPLORADOR")
+        jframe = tk.Frame(self.root, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        jframe.pack(fill="x", padx=18, pady=(0, 12))
+        jrow = tk.Frame(jframe, bg=PANEL)
+        jrow.pack(fill="x", padx=12, pady=7)
+        self.job_dot = Dot(jrow)
+        self.job_dot.pack(side="left", padx=(0, 10))
+        self.job_label = tk.Label(jrow, text="Consultando…", bg=PANEL, fg=MUTED, font=FONT_LABEL, anchor="w", justify="left")
+        self.job_label.pack(side="left", fill="x", expand=True)
+        self.job_btn = tk.Button(
+            jrow, text="Cancelar / Liberar", width=16, bg=PANEL2, fg=TEXT, activebackground=BORDER,
+            relief="flat", font=FONT_LABEL, cursor="hand2", state="disabled",
+            command=self._on_job_button,
+        )
+        self.job_btn.pack(side="right", padx=2)
+
+        # --- Máquina (CPU / RAM / núcleos) ---
+        self._section_title("MÁQUINA")
+        mframe = tk.Frame(self.root, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        mframe.pack(fill="x", padx=18, pady=(0, 12))
+        top = tk.Frame(mframe, bg=PANEL)
+        top.pack(fill="x", padx=12, pady=(7, 4))
+        tk.Label(top, text="CPU", bg=PANEL, fg=MUTED, font=FONT_LABEL, width=4, anchor="w").pack(side="left")
+        self.cpu_bar = Bar(top)
+        self.cpu_bar.pack(side="left", padx=(0, 6))
+        self.cpu_lbl = tk.Label(top, text="—%", bg=PANEL, fg=TEXT, font=FONT_MONO, width=6, anchor="w")
+        self.cpu_lbl.pack(side="left")
+        tk.Label(top, text="RAM", bg=PANEL, fg=MUTED, font=FONT_LABEL, width=4, anchor="e").pack(side="left", padx=(10, 0))
+        self.ram_bar = Bar(top)
+        self.ram_bar.pack(side="left", padx=(6, 6))
+        self.ram_lbl = tk.Label(top, text="—", bg=PANEL, fg=TEXT, font=FONT_MONO, width=14, anchor="w")
+        self.ram_lbl.pack(side="left")
+
+        grid = tk.Frame(mframe, bg=PANEL)
+        grid.pack(fill="x", padx=12, pady=(2, 8))
+        ncores = psutil.cpu_count(logical=True) or 0
+        cols = 8
+        for i in range(ncores):
+            cb = CoreBar(grid)
+            cb.grid(row=i // cols, column=i % cols, padx=1, pady=1)
+            self.core_bars.append(cb)
+        tk.Label(mframe, text=f"{ncores} procesadores lógicos", bg=PANEL, fg=MUTED, font=FONT_SMALL).pack(anchor="w", padx=12, pady=(0, 6))
+
         # --- Controles globales ---
         gframe = tk.Frame(self.root, bg=BG)
-        gframe.pack(fill="x", padx=18, pady=(0, 8))
+        gframe.pack(fill="x", padx=18, pady=(0, 4))
         tk.Button(
             gframe, text="INICIAR TODO", command=lambda: self._async(self.start_all),
             bg=GREEN, fg="#06231F", activebackground=GREEN, font=FONT_LABEL_B,
@@ -390,6 +549,17 @@ class App:
             bg=PANEL2, fg=RED, activebackground=PANEL2, font=FONT_LABEL_B,
             relief="flat", padx=10, pady=8, cursor="hand2",
         ).pack(side="left", expand=True, fill="x", padx=(6, 0))
+
+        # Interruptor de auto-recuperación.
+        arow = tk.Frame(self.root, bg=BG)
+        arow.pack(fill="x", padx=18, pady=(0, 6))
+        chk = tk.Checkbutton(
+            arow, text="Auto-recuperación (levanta servicios caídos)", variable=self.autorecover,
+            command=self._toggle_autorecover, bg=BG, fg=TEXT, font=FONT_LABEL, anchor="w",
+            selectcolor=PANEL2, activebackground=BG, activeforeground=TEXT,
+            highlightthickness=0, bd=0, cursor="hand2",
+        )
+        chk.pack(side="left")
 
         self.updated = tk.Label(self.root, text="Última actualización: —", bg=BG, fg=MUTED, font=FONT_SMALL)
         self.updated.pack(fill="x", padx=18)
@@ -448,6 +618,10 @@ class App:
     def _do_action(self, key: str, name: str) -> None:
         self.pending[key] = ("stopping" if name == "stop" else "starting", time.time() + 12)
         self._render_pending(key)  # estamos en el hilo de UI (callback de botón)
+        # Parada manual: el usuario NO quiere ese servicio arriba → no auto-recuperar.
+        if name == "stop":
+            self.ever_up.discard(key)
+            self.recovery.pop(key, None)
 
         def run():
             fn = {"start": self.mgr.start, "stop": self.mgr.stop, "restart": self.mgr.restart}[name]
@@ -455,6 +629,11 @@ class App:
             self.ui_queue.put(("log", (msg, ok)))
 
         self._async(run)
+
+    def _toggle_autorecover(self) -> None:
+        on = self.autorecover.get()
+        save_setting("autorecover", on)
+        self.ui_queue.put(("log", (f"Auto-recuperación {'ACTIVADA' if on else 'desactivada'}.", True)))
 
     def start_all(self) -> None:  # corre en hilo aparte
         self.ui_queue.put(("log", ("Iniciando todos los servicios…", True)))
@@ -466,6 +645,8 @@ class App:
 
     def stop_all(self) -> None:  # corre en hilo aparte
         self.ui_queue.put(("log", ("Deteniendo todos los servicios…", True)))
+        self.ever_up.clear()      # parada manual de todo → no auto-recuperar
+        self.recovery.clear()
         for key in reversed(ORDER):  # orden inverso
             self.ui_queue.put(("pending", (key, "stopping", 8)))
             ok, msg = self.mgr.stop(key)
@@ -501,7 +682,18 @@ class App:
         running = {key: self.mgr.is_running(key) for key in ORDER}
         known = {key: self.mgr.known(key) for key in ORDER}
         health = fetch_health()
-        return {"running": running, "known": known, "health": health, "ts": datetime.now()}
+        explore = fetch_explore_status() if running["bridge"] else None
+        # CPU (total + por núcleo) y RAM. cpu_percent(interval=None) no bloquea.
+        try:
+            percpu = psutil.cpu_percent(percpu=True)
+            cpu_total = sum(percpu) / len(percpu) if percpu else 0.0
+            vm = psutil.virtual_memory()
+            machine = {"cpu_total": cpu_total, "percpu": percpu,
+                       "ram_pct": vm.percent, "ram_used_gb": vm.used / 1e9, "ram_total_gb": vm.total / 1e9}
+        except Exception:
+            machine = None
+        return {"running": running, "known": known, "health": health, "explore": explore,
+                "machine": machine, "ts": datetime.now()}
 
     def _apply(self, data: dict) -> None:
         now = time.time()
@@ -537,7 +729,64 @@ class App:
             d.set(GREEN if running[key] else RED)
 
         self._apply_diag(health)
+        self._apply_jobs(running["bridge"], data.get("explore"))
+        self._apply_machine(data.get("machine"))
+        self._maybe_autorecover(running, known)
         self.updated.config(text="Última actualización: " + data["ts"].strftime("%H:%M:%S"))
+
+    def _apply_machine(self, m: dict | None) -> None:
+        if not m:
+            return
+        self.cpu_bar.set(m["cpu_total"])
+        self.cpu_lbl.config(text=f"{m['cpu_total']:.0f}%")
+        self.ram_bar.set(m["ram_pct"])
+        self.ram_lbl.config(text=f"{m['ram_used_gb']:.1f}/{m['ram_total_gb']:.0f} GB")
+        for cb, pct in zip(self.core_bars, m["percpu"]):
+            cb.set(pct)
+
+    def _maybe_autorecover(self, running: dict, known: dict) -> None:
+        """Levanta servicios caídos si la auto-recuperación está activa. Anti-bucle:
+        máx N intentos por ventana, con backoff. NO reactiva el trading del bot."""
+        if not self.autorecover.get():
+            return
+        now = time.time()
+        for key in ORDER:
+            if running[key]:
+                self.ever_up.add(key)          # sano → candidato a recuperación futura
+                self.recovery.pop(key, None)   # resetea el contador
+                continue
+            # No tocar: nunca estuvo arriba, estado desconocido, o transición en curso.
+            if key not in self.ever_up or not known[key] or key in self.pending:
+                continue
+            rec = self.recovery.setdefault(key, {"attempts": 0, "first_ts": now, "last_ts": 0.0, "paused": False})
+            if rec["paused"]:
+                continue
+            if now - rec["first_ts"] > RECOVER_WINDOW:  # ventana expirada → reinicia contador
+                rec["attempts"], rec["first_ts"] = 0, now
+            if now - rec["last_ts"] < RECOVER_COOLDOWN:  # backoff entre intentos
+                continue
+            if rec["attempts"] >= RECOVER_MAX:
+                rec["paused"] = True
+                self.ui_queue.put(("log", (
+                    f"{self.mgr.defs[key]['name']} se cayó {RECOVER_MAX} veces seguidas; "
+                    "auto-recuperación PAUSADA para este servicio, revisar manualmente.", False)))
+                continue
+            rec["attempts"] += 1
+            rec["last_ts"] = now
+            self.pending[key] = ("starting", now + 14)
+            self._render_pending(key)
+            self.ui_queue.put(("log", (
+                f"{self.mgr.defs[key]['name']} detectado caído → reiniciando "
+                f"(intento {rec['attempts']}/{RECOVER_MAX})…", True)))
+            self._async(lambda k=key: self._recover(k))
+
+    def _recover(self, key: str) -> None:
+        ok, msg = self.mgr.start(key)
+        self.ui_queue.put(("log", (msg, ok)))
+        if key == "bridge" and ok:
+            self.ui_queue.put(("log", (
+                "Bridge reiniciado; el bot quedó en PAUSA por seguridad. "
+                "Reanúdalo manualmente desde la web si quieres operar.", True)))
 
     def _apply_diag(self, health: dict | None) -> None:
         if health is None:
@@ -566,6 +815,68 @@ class App:
             text="Mercado abierto" if market else "Mercado cerrado  → esperar apertura",
             fg=TEXT if market else MUTED,
         )
+
+    def _apply_jobs(self, bridge_up: bool, explore: dict | None) -> None:
+        self.job_status = explore
+        if not bridge_up:
+            self.job_dot.set(GRAY)
+            self.job_label.config(text="Requiere bridge activo", fg=MUTED)
+            self.job_btn.config(state="disabled")
+            return
+        if explore is None:
+            self.job_dot.set(YELLOW)
+            self.job_label.config(text="No se pudo consultar (¿API key del bridge?)", fg=YELLOW)
+            self.job_btn.config(state="disabled")
+            return
+
+        status = explore.get("status")
+        stale = bool(explore.get("stale"))
+        done, total = explore.get("done", 0), explore.get("total", 0)
+        pct = round(done / total * 100) if total else 0
+
+        if status == "running" and stale:
+            age = explore.get("last_beat_age")
+            self.job_dot.set(YELLOW)
+            self.job_label.config(text=f"Huérfano: sin avance hace {age}s (al {pct}%) — pulsa Liberar", fg=YELLOW)
+            self.job_btn.config(state="normal", text="Liberar")
+        elif status == "running":
+            speed = explore.get("speed_per_sec", 0)
+            elapsed = explore.get("elapsed_seconds", 0)
+            self.job_dot.set(GREEN)
+            self.job_label.config(
+                text=f"En ejecución: {pct}% · {done}/{total} · {speed}/s · {elapsed}s · {explore.get('workers')} núcleos",
+                fg=TEXT,
+            )
+            self.job_btn.config(state="normal", text="Cancelar")
+        else:
+            self.job_dot.set(GRAY)
+            extra = ""
+            if status in ("done", "cancelled", "error") and total:
+                done_txt = {"done": "última: completada", "cancelled": "última: cancelada", "error": "última: error"}[status]
+                extra = f"  ({done_txt}, {explore.get('results_count', 0)} filas)"
+            self.job_label.config(text=f"Sin trabajos en cola — listo para nuevas búsquedas{extra}", fg=MUTED)
+            self.job_btn.config(state="disabled", text="Cancelar / Liberar")
+
+    def _on_job_button(self) -> None:
+        explore = self.job_status or {}
+        status = explore.get("status")
+        stale = bool(explore.get("stale"))
+
+        if status == "running" and not stale:
+            pct = round(explore.get("done", 0) / explore.get("total", 1) * 100) if explore.get("total") else 0
+            if not messagebox.askyesno("Cancelar búsqueda", f"Hay una búsqueda en curso al {pct}%.\n\n¿Cancelarla?"):
+                return
+            action, verb = explore_cancel, "Búsqueda cancelada."
+        else:
+            # Huérfano (o estado raro): liberar directo, sin confirmación.
+            action, verb = explore_reset, "Trabajo liberado."
+
+        def run():
+            res = action()
+            self.ui_queue.put(("log", (verb if res is not None else "No se pudo contactar el bridge.", res is not None)))
+
+        self.job_btn.config(state="disabled")
+        self._async(run)
 
     def _render_pending(self, key: str) -> None:
         if key in self.pending:

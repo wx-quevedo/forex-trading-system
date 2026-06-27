@@ -25,6 +25,7 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ..backtest.engine import run_backtest
@@ -36,14 +37,21 @@ from ..optimize.engine import (
     _params_key,
     _verdict,
 )
+from .cache import ENGINE_VERSION, ExploreCache, make_cache_key
+
+# Caché de resultados por combinación (SQLite, junto al bridge).
+_CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "explore_cache.db"
+_default_cache = ExploreCache(_CACHE_PATH)
 
 # Conjuntos que el sistema barre (el usuario elige cuáles incluir).
 SL_CHOICES = [15, 20, 30, 50]
 TP_CHOICES = [30, 40, 60, 100]
 RISK_CHOICES = [0.5, 1.0, 2.0]
 SWEEP_TIMEFRAMES = ["M5", "M15", "H1", "H4"]
-MAX_CONFIGS = 60000  # tope de seguridad: nº de configuraciones por búsqueda
+MAX_CONFIGS = 200000  # máximo absoluto de seguridad (rechazo por encima)
+WARN_CONFIGS = 20000  # a partir de aquí el frontend pide confirmación (no bloquea)
 SPLIT = 0.7  # in-sample / out-of-sample
+STALE_SECONDS = 180  # sin latido por más de esto → job huérfano (se libera solo)
 
 
 def default_workers() -> int:
@@ -81,40 +89,38 @@ def _row(pair: str, stype: str, tf: str, params: dict[str, Any], sl: float, tp: 
         "profit_factor": full_m.get("profit_factor"),
         "max_drawdown_pct": full_m.get("max_drawdown_pct", 0.0),
         "total_trades": full_m["total_trades"],
+        "blown": bool(full_m.get("blown", False)),  # cuenta quebrada en el periodo
         "in_return": round(in_ret, 2),
         "out_return": round(out_ret, 2),
         "robustness_trades": total_tr,  # in+out, para el veredicto
     }
 
 
-def _evaluate_group(pair: str, stype: str, tf: str, candles: list[dict[str, Any]],
-                    in_c: list[dict[str, Any]], out_c: list[dict[str, Any]],
-                    sl: float, tp: float, rp: float, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Sweep del grid de parámetros para un (par, tipo, tf, sl, tp, riesgo) fijo.
-
-    Función PURA (sin MT5, sin estado compartido) → ejecutable en un proceso worker.
-    Reusa las MISMAS velas (full/in/out) para todas las combos del grid y aplica el
-    veredicto de robustez de la Fase 8 (penalización de picos por vecinos del grupo)."""
+def _compute_combo(pair: str, stype: str, tf: str, candles: list[dict[str, Any]],
+                   in_c: list[dict[str, Any]], out_c: list[dict[str, Any]],
+                   params: dict[str, Any], sl: float, tp: float, rp: float,
+                   cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Evalúa UNA combinación (full + in + out). Devuelve la fila PARCIAL (sin
+    veredicto) o None si es inválida. Función pura (sin MT5, sin estado)."""
     risk = {"sl_pips": sl, "tp_pips": tp, "risk_percent": rp}
-    combos = _grid(stype, {})
-    collected: list[dict[str, Any]] = []
+    try:
+        full = run_backtest(stype, params, candles, symbol=pair, timeframe=tf, risk=risk, config=cfg)
+        bt_in = run_backtest(stype, params, in_c, symbol=pair, timeframe=tf, risk=risk, config=cfg)
+        bt_out = run_backtest(stype, params, out_c, symbol=pair, timeframe=tf, risk=risk, config=cfg)
+    except Exception:  # noqa: BLE001 - una combinación inválida no aborta la búsqueda
+        return None
+    m_in, m_out = bt_in["metrics"], bt_out["metrics"]
+    total_tr = int(m_in["total_trades"]) + int(m_out["total_trades"])
+    return _row(pair, stype, tf, params, sl, tp, rp, full["metrics"],
+                float(m_in["return_pct"]), float(m_out["return_pct"]), total_tr)
 
-    for params in combos:
-        try:
-            full = run_backtest(stype, params, candles, symbol=pair, timeframe=tf, risk=risk, config=cfg)
-            bt_in = run_backtest(stype, params, in_c, symbol=pair, timeframe=tf, risk=risk, config=cfg)
-            bt_out = run_backtest(stype, params, out_c, symbol=pair, timeframe=tf, risk=risk, config=cfg)
-        except Exception:  # noqa: BLE001 - una combinación inválida no aborta la búsqueda
-            continue
-        m_in, m_out = bt_in["metrics"], bt_out["metrics"]
-        total_tr = int(m_in["total_trades"]) + int(m_out["total_trades"])
-        collected.append(_row(pair, stype, tf, params, sl, tp, rp, full["metrics"],
-                              float(m_in["return_pct"]), float(m_out["return_pct"]), total_tr))
 
-    # Penalización de picos aislados (mesetas) entre vecinos de grid del MISMO grupo.
-    by_key = {_params_key(r["params"]): r["out_return"] for r in collected}
+def _finalize_group(partials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pasa el veredicto de robustez (Fase 8) sobre el grupo COMPLETO (cacheados +
+    calculados). Determinista; barato (sin backtests). Penaliza picos por vecinos."""
+    by_key = {_params_key(r["params"]): r["out_return"] for r in partials}
     axes: dict[str, list] = {}
-    for r in collected:
+    for r in partials:
         for k in _numeric_keys(r["params"]):
             axes.setdefault(k, [])
             if r["params"][k] not in axes[k]:
@@ -122,32 +128,48 @@ def _evaluate_group(pair: str, stype: str, tf: str, candles: list[dict[str, Any]
     for k in axes:
         axes[k].sort()
 
-    for r in collected:
+    for r in partials:
         nb = _neighbor_out(r["params"], by_key, axes)
-        score, verdict, label = _verdict(r["in_return"], r["out_return"], r.pop("robustness_trades"), nb)
+        total_tr = r.pop("robustness_trades", r.get("total_trades", 0))
+        score, verdict, label = _verdict(r["in_return"], r["out_return"], total_tr, nb)
         r["robustness"] = round(score, 3)
         r["stars"] = max(0, min(4, round(score * 4)))
         r["verdict"] = verdict
         r["verdict_label"] = label
-    return collected
+    return partials
 
 
-def _group_worker(task: tuple) -> tuple[list[dict[str, Any]], float, int]:
-    """Ejecutado en un proceso worker: evalúa un grupo y reporta su tiempo de cálculo."""
-    pair, stype, tf, candles, sl, tp, rp, cfg, split = task
+def _missing_worker(task: tuple) -> tuple[list[dict[str, Any]], float]:
+    """Worker (proceso aparte): calcula SOLO las combinaciones faltantes (las que no
+    estaban en caché) de un grupo. Devuelve filas parciales + tiempo de cálculo."""
+    pair, stype, tf, candles, sl, tp, rp, cfg, split, missing_params = task
     t0 = time.perf_counter()
     n = len(candles)
     cut = int(n * split)
-    rows = _evaluate_group(pair, stype, tf, candles, candles[:cut], candles[cut:], sl, tp, rp, cfg)
-    return rows, time.perf_counter() - t0, grid_size(stype)
+    in_c, out_c = candles[:cut], candles[cut:]
+    rows = []
+    for params in missing_params:
+        row = _compute_combo(pair, stype, tf, candles, in_c, out_c, params, sl, tp, rp, cfg)
+        if row is not None:
+            rows.append(row)
+    return rows, time.perf_counter() - t0
 
 
 class ExploreJob:
-    """Estado de una búsqueda en curso, protegido por un lock. Una a la vez."""
+    """Estado de una búsqueda en curso, protegido por un lock. Una a la vez.
 
-    def __init__(self) -> None:
+    Auto-liberación de huérfanos: el job late (`_last_beat`) mientras avanza; si está
+    marcado 'running' pero sin latido reciente (> STALE_SECONDS) se considera MUERTO
+    y deja de bloquear nuevas búsquedas. El estado vive SOLO en memoria, así que un
+    reinicio del bridge arranca limpio (sin job fantasma). Cada arranque incrementa
+    `_run_id`: un hilo viejo superado no puede corromper el estado del run nuevo."""
+
+    def __init__(self, cache: ExploreCache | None = None) -> None:
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
+        self._run_id = 0
+        self._executor: ProcessPoolExecutor | None = None
+        self._cache = cache if cache is not None else _default_cache
         self.reset()
 
     def reset(self) -> None:
@@ -161,23 +183,62 @@ class ExploreJob:
         self.finished_at: str | None = None
         self.current: str | None = None
         self.workers = 1
+        self._executor = None
         # Instrumentación / diagnóstico.
         self._t_start = 0.0
         self._t_end = 0.0
+        self._last_beat = 0.0     # último avance (monotonic); base del heartbeat
         self.t_mt5 = 0.0          # segundos descargando velas de MT5 (wall, proceso principal)
         self.t_compute = 0.0      # segundos-CPU de cálculo (suma de todos los workers)
         self.candle_fetches = 0   # nº de descargas de velas (debe ≈ pares×timeframes únicos)
+        self.cache_hits = 0       # combinaciones traídas de la caché (no recalculadas)
+        self.cache_misses = 0     # combinaciones calculadas (y guardadas en caché)
+        self._use_cache = True
         self._cancel = False
 
-    # -- control ----------------------------------------------------------
-    def is_running(self) -> bool:
+    # -- control / salud --------------------------------------------------
+    def _beat(self) -> None:
+        self._last_beat = time.monotonic()
+
+    def _beat_age(self) -> float | None:
+        if self.status != "running" or not self._last_beat:
+            return None
+        return time.monotonic() - self._last_beat
+
+    def is_stale(self) -> bool:
+        """¿Marcado 'running' pero sin avance reciente? (huérfano/zombi)."""
         with self._lock:
-            return self.status == "running"
+            age = self._beat_age()
+            return age is not None and age > STALE_SECONDS
+
+    def is_running(self) -> bool:
+        """Vivo de verdad: 'running' Y con latido reciente. Un huérfano NO cuenta."""
+        with self._lock:
+            if self.status != "running":
+                return False
+            age = self._beat_age()
+            return age is None or age <= STALE_SECONDS
 
     def cancel(self) -> None:
         with self._lock:
             if self.status == "running":
                 self._cancel = True
+
+    def force_reset(self) -> dict[str, Any]:
+        """Libera el job a la fuerza (huérfano o en curso): cancela, apaga el pool
+        y deja el estado limpio para nuevas búsquedas. Supera cualquier hilo viejo."""
+        with self._lock:
+            ex = self._executor
+            self._cancel = True
+            self._run_id += 1  # invalida el run anterior (sus writes se ignorarán)
+        if ex is not None:
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except Exception:  # noqa: BLE001
+                pass
+        with self._lock:
+            self.reset()
+            return self.snapshot()
 
     def _should_cancel(self) -> bool:
         with self._lock:
@@ -196,6 +257,8 @@ class ExploreJob:
             speed = (self.done / elapsed) if elapsed > 0 and self.done else 0.0
             remaining = max(0, self.total - self.done)
             eta = (remaining / speed) if speed > 0 else None
+            age = self._beat_age()
+            stale = age is not None and age > STALE_SECONDS
             data = {
                 "status": self.status,
                 "total": self.total,
@@ -213,10 +276,17 @@ class ExploreJob:
                 "speed_per_sec": round(speed, 2),
                 "speed_per_min": round(speed * 60, 1),
                 "eta_seconds": round(eta, 1) if eta is not None else None,
+                # Salud / auto-liberación.
+                "stale": stale,
+                "stale_after_seconds": STALE_SECONDS,
+                "last_beat_age": round(age, 1) if age is not None else None,
                 # Diagnóstico de cuello de botella.
                 "t_mt5_seconds": round(self.t_mt5, 2),
                 "t_compute_seconds": round(self.t_compute, 2),
                 "candle_fetches": self.candle_fetches,
+                # Caché de resultados.
+                "cache_hits": self.cache_hits,
+                "cache_misses": self.cache_misses,
             }
             if include_results:
                 data["results"] = list(self.results)
@@ -225,50 +295,74 @@ class ExploreJob:
     # -- ejecución --------------------------------------------------------
     def start(self, req: dict[str, Any], client: Any) -> dict[str, Any]:
         with self._lock:
+            # Solo bloquea si hay un job VIVO de verdad (con latido reciente).
             if self.status == "running":
-                raise RuntimeError("Ya hay una búsqueda en curso.")
+                age = self._beat_age()
+                if age is None or age <= STALE_SECONDS:
+                    raise RuntimeError("Ya hay una búsqueda en curso.")
+                # Huérfano: lo superamos (su hilo viejo no podrá escribir el nuevo run).
+                stale_ex = self._executor
+            else:
+                stale_ex = None
+        if stale_ex is not None:
+            try:
+                stale_ex.shutdown(wait=False, cancel_futures=True)
+            except Exception:  # noqa: BLE001
+                pass
+        with self._lock:
             self.reset()
+            self._run_id += 1
+            run_id = self._run_id
             self.status = "running"
             self.request = req
             self.workers = int(req.get("workers") or default_workers())
             self.started_at = datetime.now(timezone.utc).isoformat()
             self._t_start = time.monotonic()
+            self._beat()
             self.total = estimate_configs(
                 req["pairs"], req["types"], req["timeframes"],
                 req["sl_choices"], req["tp_choices"], req["risk_choices"],
             )
-        self._thread = threading.Thread(target=self._run, args=(req, client), daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(req, client, run_id), daemon=True)
         self._thread.start()
         return self.snapshot()
 
-    def _add_done(self, k: int) -> None:
+    def _is_current(self, run_id: int) -> bool:
+        return self._run_id == run_id
+
+    def _add_done(self, run_id: int, k: int) -> None:
         with self._lock:
+            if not self._is_current(run_id):
+                return
             self.done += k
+            self._beat()
 
-    def _set_current(self, label: str) -> None:
+    def _set_current(self, run_id: int, label: str) -> None:
         with self._lock:
+            if not self._is_current(run_id):
+                return
             self.current = label
+            self._beat()
 
-    def _run(self, req: dict[str, Any], client: Any) -> None:
+    def _run(self, req: dict[str, Any], client: Any, run_id: int) -> None:
         try:
-            self._search(req, client)
+            self._search(req, client, run_id)
             with self._lock:
-                if self._cancel:
-                    self.status = "cancelled"
-                else:
-                    self.status = "done"
-                self._t_end = time.monotonic()
-                self.finished_at = datetime.now(timezone.utc).isoformat()
-                self.current = None
+                if self._is_current(run_id):
+                    self.status = "cancelled" if self._cancel else "done"
+                    self._t_end = time.monotonic()
+                    self.finished_at = datetime.now(timezone.utc).isoformat()
+                    self.current = None
         except Exception as exc:  # noqa: BLE001 - cualquier fallo deja el job en error
             with self._lock:
-                self.status = "error"
-                self.error = str(exc)
-                self._t_end = time.monotonic()
-                self.finished_at = datetime.now(timezone.utc).isoformat()
+                if self._is_current(run_id):
+                    self.status = "error"
+                    self.error = str(exc)
+                    self._t_end = time.monotonic()
+                    self.finished_at = datetime.now(timezone.utc).isoformat()
 
     def _fetch_all_candles(self, pairs: list[str], tfs: list[str], date_from, date_to,
-                           client: Any) -> tuple[dict[tuple[str, str], list], dict[str, dict]]:
+                           client: Any, run_id: int) -> tuple[dict[tuple[str, str], list], dict[str, dict]]:
         """Descarga UNA vez las velas de cada (par, tf) y los costos de cada par (MT5)."""
         candle_cache: dict[tuple[str, str], list] = {}
         costs_cache: dict[str, dict] = {}
@@ -283,7 +377,7 @@ class ExploreJob:
             for tf in tfs:
                 if self._should_cancel():
                     break
-                self._set_current(f"{pair} · {tf} · descargando velas")
+                self._set_current(run_id, f"{pair} · {tf} · descargando velas")
                 try:
                     candle_cache[(pair, tf)] = client.candles(pair, tf, date_from=date_from, date_to=date_to)
                 except Exception:  # noqa: BLE001 - sin velas: grupo vacío
@@ -293,7 +387,7 @@ class ExploreJob:
             self.t_mt5 += time.perf_counter() - t0
         return candle_cache, costs_cache
 
-    def _search(self, req: dict[str, Any], client: Any) -> None:
+    def _search(self, req: dict[str, Any], client: Any, run_id: int) -> None:
         pairs: list[str] = req["pairs"]
         types: list[str] = req["types"]
         tfs: list[str] = req["timeframes"]
@@ -303,71 +397,130 @@ class ExploreJob:
         capital = float(req.get("capital", 10000.0))
 
         # 1) MT5 SOLO aquí: descargar todas las velas necesarias una vez (reuso).
-        candle_cache, costs_cache = self._fetch_all_candles(pairs, tfs, req["date_from"], req["date_to"], client)
+        candle_cache, costs_cache = self._fetch_all_candles(pairs, tfs, req["date_from"], req["date_to"], client, run_id)
         if self._should_cancel():
             return
 
-        # 2) Construir la lista de tareas de CÁLCULO (sin MT5). Cada tarea = un grupo
-        #    (par, tipo, tf, sl, tp, riesgo) cuyo worker barre el grid de parámetros.
+        # 2) Planificar por grupo (par, tipo, tf, sl, tp, riesgo). Para cada grupo se
+        #    consulta la CACHÉ (en este proceso, único escritor → sin contención): lo
+        #    cacheado es instantáneo; solo lo faltante se manda a calcular a workers.
+        self._use_cache = bool(req.get("use_cache", True)) and self._cache is not None
+        date_from, date_to = req["date_from"], req["date_to"]
         configs_per_group_set = sum(grid_size(t) for t in types) * len(sls) * len(tps) * len(risks)
-        tasks: list[tuple] = []
+
+        plans: list[dict[str, Any]] = []
         for pair in pairs:
             cfg_base = {**costs_cache.get(pair, {}), "initial_balance": capital}
             for tf in tfs:
                 candles = candle_cache.get((pair, tf), [])
                 if len(candles) < 120:  # grupo inviable → avanzar el progreso igual
-                    self._add_done(configs_per_group_set)
+                    self._add_done(run_id, configs_per_group_set)
                     continue
                 for stype in types:
+                    combos = _grid(stype, {})
                     for sl in sls:
                         for tp in tps:
                             for rp in risks:
-                                tasks.append((pair, stype, tf, candles, sl, tp, rp, cfg_base, SPLIT))
+                                cached, missing = [], list(combos)
+                                if self._use_cache:
+                                    keys = [make_cache_key(pair, stype, tf, p, sl, tp, rp, cfg_base, date_from, date_to) for p in combos]
+                                    hit_map = self._cache.get_many(keys)
+                                    cached, missing = [], []
+                                    for p, k in zip(combos, keys):
+                                        hit = hit_map.get(k)
+                                        (cached if hit is not None else missing).append(hit if hit is not None else p)
+                                plans.append({
+                                    "ctx": (pair, stype, tf, sl, tp, rp),
+                                    "candles": candles, "cfg": cfg_base,
+                                    "from": date_from, "to": date_to,
+                                    "cached": cached, "missing": missing,
+                                    "grid": len(combos), "hits": len(cached), "misses": len(missing),
+                                })
 
-        if not tasks:
+        if not plans:
             return
 
-        # 3) Ejecutar el cálculo en PROCESOS (incluso con 1 worker), para que el
-        #    cómputo CPU-bound nunca retenga el GIL del proceso del servidor y el
-        #    bridge siga respondiendo (/status, /cancel) durante el barrido.
+        # 3) Ejecutar: lo totalmente cacheado se finaliza inline (instantáneo); el
+        #    resto va a PROCESOS (aprovecha la CPU y no retiene el GIL del servidor).
         #    `inprocess` (solo tests) corre en el hilo, sin spawnear procesos.
-        if req.get("inprocess"):
-            self._run_sequential(tasks)
-        else:
-            self._run_parallel(tasks)
+        self._run_plans(plans, run_id, inprocess=bool(req.get("inprocess")))
 
-    def _consume(self, rows: list[dict[str, Any]], compute_s: float, grid: int, label: str) -> None:
+    def _task_of(self, plan: dict[str, Any]) -> tuple:
+        pair, stype, tf, sl, tp, rp = plan["ctx"]
+        return (pair, stype, tf, plan["candles"], sl, tp, rp, plan["cfg"], SPLIT, plan["missing"])
+
+    def _finalize_and_consume(self, run_id: int, plan: dict[str, Any],
+                              computed: list[dict[str, Any]], compute_s: float) -> None:
+        # Guardar en caché lo recién calculado (parciales, sin veredicto).
+        if self._use_cache and computed:
+            pair, stype, tf, sl, tp, rp = plan["ctx"]
+            items = [
+                (make_cache_key(pair, stype, tf, p["params"], sl, tp, rp, plan["cfg"], plan["from"], plan["to"]), p)
+                for p in computed
+            ]
+            try:
+                self._cache.put_many(items)
+            except Exception:  # noqa: BLE001 - un fallo de caché no debe abortar la búsqueda
+                pass
+        rows = _finalize_group(plan["cached"] + computed)
+        pair, stype, tf = plan["ctx"][0], plan["ctx"][1], plan["ctx"][2]
+        self._consume(run_id, rows, compute_s, plan["grid"], f"{pair} · {tf} · {stype}", plan["hits"], plan["misses"])
+
+    def _consume(self, run_id: int, rows: list[dict[str, Any]], compute_s: float, grid: int,
+                 label: str, hits: int = 0, misses: int = 0) -> None:
         with self._lock:
+            if not self._is_current(run_id):
+                return
             self.results.extend(rows)
             self.done += grid
             self.t_compute += compute_s
+            self.cache_hits += hits
+            self.cache_misses += misses
             self.current = label
+            self._beat()
 
-    def _run_sequential(self, tasks: list[tuple]) -> None:
-        for task in tasks:
-            if self._should_cancel():
+    def _run_plans(self, plans: list[dict[str, Any]], run_id: int, inprocess: bool) -> None:
+        # 1) Grupos totalmente cacheados → finalizar inline (sin backtests).
+        pending: list[dict[str, Any]] = []
+        for plan in plans:
+            if self._should_cancel() or not self._is_current(run_id):
                 return
-            pair, stype, tf = task[0], task[1], task[2]
-            self._set_current(f"{pair} · {tf} · {stype}")
-            rows, compute_s, grid = _group_worker(task)
-            self._consume(rows, compute_s, grid, f"{pair} · {tf} · {stype}")
+            if not plan["missing"]:
+                self._finalize_and_consume(run_id, plan, [], 0.0)
+            else:
+                pending.append(plan)
+        if not pending:
+            return
 
-    def _run_parallel(self, tasks: list[tuple]) -> None:
+        # 2) Grupos con combinaciones faltantes → cálculo (paralelo o en hilo en tests).
+        if inprocess:
+            for plan in pending:
+                if self._should_cancel() or not self._is_current(run_id):
+                    return
+                computed, compute_s = _missing_worker(self._task_of(plan))
+                self._finalize_and_consume(run_id, plan, computed, compute_s)
+            return
+
         ex = ProcessPoolExecutor(max_workers=self.workers)
+        with self._lock:
+            self._executor = ex
         try:
-            futures = {ex.submit(_group_worker, t): (t[0], t[1], t[2]) for t in tasks}
+            futures = {ex.submit(_missing_worker, self._task_of(p)): p for p in pending}
             for fut in as_completed(futures):
-                if self._should_cancel():
+                if self._should_cancel() or not self._is_current(run_id):
                     ex.shutdown(wait=False, cancel_futures=True)
                     return
-                pair, stype, tf = futures[fut]
+                plan = futures[fut]
                 try:
-                    rows, compute_s, grid = fut.result()
+                    computed, compute_s = fut.result()
                 except Exception:  # noqa: BLE001 - un grupo que falle no aborta el resto
-                    rows, compute_s, grid = [], 0.0, grid_size(stype)
-                self._consume(rows, compute_s, grid, f"{pair} · {tf} · {stype}")
+                    computed, compute_s = [], 0.0
+                self._finalize_and_consume(run_id, plan, computed, compute_s)
         finally:
             ex.shutdown(wait=False, cancel_futures=True)
+            with self._lock:
+                if self._executor is ex:
+                    self._executor = None
 
 
 job = ExploreJob()

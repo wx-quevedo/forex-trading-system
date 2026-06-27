@@ -284,7 +284,10 @@ class MT5Client:
         info = mt5.symbol_info(symbol)
         if info is None:
             return {}
-        pip = 0.01 if symbol.upper().endswith("JPY") else 0.0001
+        # pip = 10 puntos del símbolo (coherente con el motor de backtest): así el
+        # spread en pips es correcto también para metales/índices (gold point 0.01 →
+        # pip 0.1), no inflado por el 0.0001 fijo de forex.
+        pip = float(info.point) * 10 if info.point else (0.01 if symbol.upper().endswith("JPY") else 0.0001)
         spread_pips = (info.spread * info.point) / pip if pip else 0.0
         return {
             "spread_pips": round(spread_pips, 3),
