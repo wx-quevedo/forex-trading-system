@@ -17,12 +17,14 @@ export default function Index({ strategies }: { strategies: Strategy[] }) {
 
             <div className="mb-4 flex items-center justify-between">
                 <p className="text-sm text-text-secondary">{strategies.length} estrategia(s)</p>
-                <Link
-                    href="/strategies/create"
-                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
-                >
-                    + Nueva estrategia
-                </Link>
+                <div className="flex items-center gap-2">
+                    <Link href="/strategies/create" className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary">
+                        Formulario rápido
+                    </Link>
+                    <Link href="/laboratory" className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90">
+                        + Nueva estrategia (Laboratorio)
+                    </Link>
+                </div>
             </div>
 
             {strategies.length === 0 ? (

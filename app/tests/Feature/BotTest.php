@@ -36,19 +36,19 @@ class BotTest extends TestCase
         ]);
     }
 
-    public function test_start_creates_bot_run_and_calls_bridge(): void
+    public function test_start_adds_strategy_and_calls_bridge(): void
     {
-        $this->mock(PythonBridgeService::class, function (MockInterface $m) {
+        $strategy = $this->strategy();
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) use ($strategy) {
             $m->shouldReceive('botStart')->once()
-                ->with(\Mockery::on(fn ($cfg) => $cfg['strategy_type'] === 'ma_cross'
+                ->with(\Mockery::on(fn ($cfg) => $cfg['strategy_id'] === $strategy->id
+                    && $cfg['strategy_type'] === 'ma_cross'
                     && $cfg['symbol'] === 'EURUSD'
                     && $cfg['lot'] === 0.05
                     && $cfg['max_positions'] === 2
                     && $cfg['sl_pips'] === 20.0))
-                ->andReturn(['status' => 'running', 'positions' => [], 'signals' => [], 'closed_trades' => []]);
+                ->andReturn(['status' => 'running', 'runs' => [], 'positions' => [], 'signals' => [], 'closed_trades' => []]);
         });
-
-        $strategy = $this->strategy();
 
         $this->actingAs(User::factory()->create())
             ->postJson('/bot/start', [
@@ -60,7 +60,7 @@ class BotTest extends TestCase
         $this->assertDatabaseHas('bot_runs', ['strategy_id' => $strategy->id, 'status' => 'running']);
     }
 
-    public function test_panic_stops_active_run(): void
+    public function test_panic_stops_all_runs(): void
     {
         $this->mock(PythonBridgeService::class, function (MockInterface $m) {
             $m->shouldReceive('botPanic')->once()->andReturn(['panic' => ['count' => 2, 'closed' => [], 'errors' => []], 'status' => ['status' => 'stopped']]);
@@ -76,23 +76,39 @@ class BotTest extends TestCase
         $this->assertSame('stopped', $run->fresh()->status);
     }
 
-    public function test_status_syncs_signals_trades_and_run(): void
+    public function test_pause_targets_one_strategy(): void
+    {
+        $strategy = $this->strategy();
+        $run = BotRun::create(['strategy_id' => $strategy->id, 'started_at' => now(), 'status' => 'running']);
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) use ($strategy) {
+            $m->shouldReceive('botPause')->once()->with($strategy->id)->andReturn(['status' => 'paused', 'runs' => []]);
+        });
+
+        $this->actingAs(User::factory()->create())
+            ->postJson('/bot/pause', ['strategy_id' => $strategy->id])
+            ->assertOk();
+
+        $this->assertSame('paused', $run->fresh()->status);
+    }
+
+    public function test_status_syncs_per_strategy_with_traceability(): void
     {
         $strategy = $this->strategy();
         $run = BotRun::create(['strategy_id' => $strategy->id, 'started_at' => now(), 'status' => 'running']);
 
-        $this->mock(PythonBridgeService::class, function (MockInterface $m) use ($run) {
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) use ($run, $strategy) {
             $m->shouldReceive('botStatus')->andReturn([
                 'status' => 'running',
-                'bot_run_id' => $run->id,
-                'stop_reason' => null,
-                'realized_pnl_today' => 12.5,
+                'runs' => [
+                    ['strategy_id' => $strategy->id, 'bot_run_id' => $run->id, 'status' => 'running', 'realized_pnl_today' => 12.5, 'stop_reason' => null, 'error' => null],
+                ],
                 'positions' => [],
+                'exposure' => [],
                 'signals' => [
-                    ['seq' => 1, 'evaluated_at' => now()->toIso8601String(), 'symbol' => 'EURUSD', 'signal_type' => 'buy', 'executed' => true, 'reason' => 'cruce', 'indicator_values' => ['fast' => 1.1]],
+                    ['seq' => 1, 'strategy_id' => $strategy->id, 'evaluated_at' => now()->toIso8601String(), 'symbol' => 'EURUSD', 'signal_type' => 'buy', 'executed' => true, 'reason' => 'cruce', 'indicator_values' => ['fast' => 1.1]],
                 ],
                 'closed_trades' => [
-                    ['ticket' => 777, 'symbol' => 'EURUSD', 'direction' => 'buy', 'volume' => 0.01, 'open_price' => 1.1, 'close_price' => 1.105, 'pnl' => 12.5, 'exit_reason' => 'tp'],
+                    ['ticket' => 777, 'strategy_id' => $strategy->id, 'magic' => 770001, 'symbol' => 'EURUSD', 'direction' => 'buy', 'volume' => 0.01, 'open_price' => 1.1, 'close_price' => 1.105, 'pnl' => 12.5, 'close_reason' => 'take_profit'],
                 ],
             ]);
         });
@@ -103,7 +119,7 @@ class BotTest extends TestCase
             ->assertJsonPath('status', 'running');
 
         $this->assertDatabaseHas('signal_logs', ['strategy_id' => $strategy->id, 'signal_type' => 'buy', 'executed' => true]);
-        $this->assertDatabaseHas('trades', ['ticket' => 777, 'bot_run_id' => $run->id, 'pnl' => 12.5]);
+        $this->assertDatabaseHas('trades', ['ticket' => 777, 'bot_run_id' => $run->id, 'strategy_id' => $strategy->id, 'magic' => 770001, 'close_reason' => 'take_profit']);
         $this->assertEquals(12.5, $run->fresh()->total_pnl);
         $this->assertSame(1, $run->fresh()->total_trades);
     }

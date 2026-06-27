@@ -41,7 +41,7 @@ class BotController extends Controller
     public function status(): JsonResponse
     {
         $status = $this->bot->syncAndStatus();
-        $status['journal'] = $this->journal($status['bot_run_id'] ?? null);
+        $status['journal'] = $this->journal(null);
 
         return response()->json($status);
     }
@@ -71,6 +71,11 @@ class BotController extends Controller
         $strategy = Strategy::findOrFail($data['strategy_id']);
         $params = $strategy->parameters ?? [];
         $risk = $params['risk'] ?? [];
+        $timeframe = $data['timeframe'] ?? $strategy->timeframe;
+
+        // Una sola corrida activa por estrategia: cierra anteriores en la BD.
+        BotRun::where('strategy_id', $strategy->id)->whereIn('status', ['running', 'paused'])
+            ->update(['status' => 'stopped', 'stopped_at' => now()]);
 
         $run = BotRun::create([
             'strategy_id' => $strategy->id,
@@ -82,11 +87,12 @@ class BotController extends Controller
 
         try {
             $status = $this->bridge->botStart([
+                'strategy_id' => $strategy->id,
                 'bot_run_id' => $run->id,
                 'strategy_type' => $params['type'] ?? 'ma_cross',
                 'params' => $params['indicators'] ?? [],
                 'symbol' => $strategy->pair,
-                'timeframe' => $data['timeframe'] ?? $strategy->timeframe,
+                'timeframe' => $timeframe,
                 'lot' => (float) $data['lot'],
                 'sl_pips' => (float) ($risk['sl_pips'] ?? 20),
                 'tp_pips' => (float) ($risk['tp_pips'] ?? 40),
@@ -101,29 +107,45 @@ class BotController extends Controller
             return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
         }
 
-        $msg = "Bot iniciado: {$strategy->name} ({$strategy->pair} {$data['timeframe']}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2);
+        $msg = "Estrategia añadida: {$strategy->name} ({$strategy->pair} {$timeframe}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2);
         $this->telegram->notify('started', $msg);
-        $this->bot->logEvent($run->id, 'started', 'info', $msg);
+        $this->bot->logEvent($run->id, 'started', 'info', $msg, $strategy->id);
 
         return response()->json(['status' => $status]);
     }
 
-    public function pause(): JsonResponse
+    public function pause(Request $request): JsonResponse
     {
-        return $this->control_action('botPause', 'paused', 'Bot pausado.');
+        return $this->target($request, 'botPause', 'paused', 'Estrategia pausada.', 'paused');
     }
 
-    public function resume(): JsonResponse
+    public function resume(Request $request): JsonResponse
     {
-        return $this->control_action('botResume', 'resumed', 'Bot reanudado.');
+        return $this->target($request, 'botResume', 'resumed', 'Estrategia reanudada.', 'running');
     }
 
-    public function stop(): JsonResponse
+    public function stop(Request $request): JsonResponse
     {
-        return $this->control_action('botStop', 'stopped', 'Bot detenido.', stoppedRun: true);
+        return $this->target($request, 'botStop', 'stopped', 'Estrategia detenida.', 'stopped');
     }
 
-    /** PANIC: cierra TODAS las posiciones y detiene el bot. */
+    public function remove(Request $request): JsonResponse
+    {
+        $sid = $request->integer('strategy_id') ?: null;
+        if (! $sid) {
+            return response()->json(['error' => 'strategy_id requerido.'], 422);
+        }
+        try {
+            $status = $this->bridge->botRemove($sid);
+        } catch (Throwable $e) {
+            return response()->json(['error' => $e->getMessage()], 502);
+        }
+        $this->stopBotRuns($sid);
+
+        return response()->json(['status' => $status]);
+    }
+
+    /** PANIC: cierra TODAS las posiciones de TODAS las estrategias y detiene todo. */
     public function panic(): JsonResponse
     {
         try {
@@ -131,11 +153,10 @@ class BotController extends Controller
         } catch (Throwable $e) {
             return response()->json(['error' => 'Error en PANIC: ' . $e->getMessage()], 502);
         }
-        $runId = $this->latestRunId();
-        $this->markRunStopped();
+        $this->stopBotRuns(null);
         $closed = $result['panic']['count'] ?? 0;
-        $this->telegram->notify('panic', "PANIC activado: {$closed} posiciones cerradas y bot detenido.");
-        $this->bot->logEvent($runId, 'panic', 'warning', "PANIC: {$closed} posiciones cerradas y bot detenido.");
+        $this->telegram->notify('panic', "PANIC activado: {$closed} posiciones cerradas, todas las estrategias detenidas.");
+        $this->bot->logEvent(null, 'panic', 'warning', "PANIC: {$closed} posiciones cerradas, todas las estrategias detenidas.");
 
         return response()->json($result);
     }
@@ -152,41 +173,54 @@ class BotController extends Controller
     }
 
     // --- helpers ---------------------------------------------------------
-    private function control_action(string $method, string $event, string $message, bool $stoppedRun = false): JsonResponse
+    /** Acción de control dirigida a una estrategia (strategy_id) o a todas. */
+    private function target(Request $request, string $method, string $event, string $message, string $newStatus): JsonResponse
     {
+        $sid = $request->integer('strategy_id') ?: null;
         try {
-            $status = $this->bridge->{$method}();
+            $status = $this->bridge->{$method}($sid);
         } catch (Throwable $e) {
             return response()->json(['error' => $e->getMessage()], 502);
         }
-        $this->bot->logEvent($this->latestRunId(), $event, 'info', $message);
-        if ($stoppedRun) {
-            $this->markRunStopped();
+
+        // Reflejar en la BD el nuevo estado de la(s) corrida(s).
+        $query = BotRun::whereIn('status', ['running', 'paused']);
+        if ($sid) {
+            $query->where('strategy_id', $sid);
         }
+        $update = ['status' => $newStatus];
+        if ($newStatus === 'stopped') {
+            $update['stopped_at'] = now();
+        }
+        $query->update($update);
+
         $this->telegram->notify($event, $message);
+        $this->bot->logEvent($this->runIdForStrategy($sid), $event, 'info', $message, $sid);
 
         return response()->json(['status' => $status]);
     }
 
-    private function markRunStopped(): void
+    private function stopBotRuns(?int $strategyId): void
     {
-        BotRun::whereIn('status', ['running', 'paused'])
-            ->latest('id')
-            ->first()
-            ?->update(['status' => 'stopped', 'stopped_at' => now()]);
+        $query = BotRun::whereIn('status', ['running', 'paused']);
+        if ($strategyId) {
+            $query->where('strategy_id', $strategyId);
+        }
+        $query->update(['status' => 'stopped', 'stopped_at' => now()]);
     }
 
-    private function latestRunId(): ?int
+    private function runIdForStrategy(?int $strategyId): ?int
     {
-        return BotRun::latest('id')->value('id');
+        return BotRun::when($strategyId, fn ($q) => $q->where('strategy_id', $strategyId))
+            ->latest('id')->value('id');
     }
 
-    /** Journal del bot (eventos del run, o los más recientes si no hay run). */
+    /** Journal del bot (eventos recientes de todas las estrategias). */
     private function journal(?int $runId): \Illuminate\Support\Collection
     {
         return BotEvent::when($runId, fn ($q) => $q->where('bot_run_id', $runId))
             ->latest('occurred_at')
-            ->limit(100)
-            ->get(['id', 'type', 'severity', 'message', 'occurred_at']);
+            ->limit(150)
+            ->get(['id', 'bot_run_id', 'strategy_id', 'type', 'severity', 'message', 'occurred_at']);
     }
 }

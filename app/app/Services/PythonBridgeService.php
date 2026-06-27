@@ -219,19 +219,24 @@ class PythonBridgeService
         return $this->request('POST', '/bot/start', ['json' => $config]);
     }
 
-    public function botPause(): array
+    public function botPause(?int $strategyId = null): array
     {
-        return $this->request('POST', '/bot/pause');
+        return $this->request('POST', '/bot/pause', ['json' => ['strategy_id' => $strategyId]]);
     }
 
-    public function botResume(): array
+    public function botResume(?int $strategyId = null): array
     {
-        return $this->request('POST', '/bot/resume');
+        return $this->request('POST', '/bot/resume', ['json' => ['strategy_id' => $strategyId]]);
     }
 
-    public function botStop(): array
+    public function botStop(?int $strategyId = null): array
     {
-        return $this->request('POST', '/bot/stop');
+        return $this->request('POST', '/bot/stop', ['json' => ['strategy_id' => $strategyId]]);
+    }
+
+    public function botRemove(int $strategyId): array
+    {
+        return $this->request('POST', '/bot/remove', ['json' => ['strategy_id' => $strategyId]]);
     }
 
     /** PANIC: cierra todas las posiciones. Timeout amplio por si hay varias. */

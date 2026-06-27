@@ -1,4 +1,9 @@
-"""Loop de ejecución del bot: evalúa en cada vela cerrada y opera con seguridad."""
+"""Loop de ejecución MULTI-ESTRATEGIA del bot.
+
+Itera sobre todas las estrategias activas, evaluando cada una en su par/timeframe
+con su propio magic, guards y PnL. Trazabilidad total: cada orden lleva el magic
+y comment de su estrategia. El panic cierra TODO.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +15,27 @@ from ..mt5_client import MT5Error, client
 from ..strategy import evaluate_strategy
 from . import executor
 from .guards import can_open, daily_limit_hit
-from .state import bot_state
+from .state import bot_state, magic_for
 
-_DEFAULT_POLL = 10.0  # segundos entre comprobaciones (la acción es por vela cerrada)
+_DEFAULT_POLL = 10.0
+
+
+def _now() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _infer_close_reason(rec: dict[str, Any], close_price: float | None) -> str:
+    sl = rec.get("sl")
+    tp = rec.get("tp")
+    if close_price is None:
+        return "manual"
+    pip = executor.pip_size(rec.get("symbol", "EURUSD"))
+    tol = 5 * pip
+    if tp and abs(close_price - float(tp)) <= tol:
+        return "take_profit"
+    if sl and abs(close_price - float(sl)) <= tol:
+        return "stop_loss"
+    return "manual"
 
 
 class BotRunner:
@@ -22,98 +45,91 @@ class BotRunner:
         self.poll = poll
 
     # -- control ----------------------------------------------------------
-    def start(self, config: dict[str, Any]) -> None:
-        s = bot_state
-        with s.lock():
-            s.bot_run_id = config.get("bot_run_id")
-            s.strategy_type = config["strategy_type"]
-            s.params = config.get("params", {})
-            # Resolver al símbolo OPERABLE del broker (EURUSD -> EURUSD#) para que
-            # velas, precio, posiciones y órdenes usen todos el mismo símbolo real.
-            requested = config["symbol"].upper()
-            try:
-                s.symbol = client.resolve_tradable_symbol(requested)
-            except Exception:  # noqa: BLE001 - si falla, usar el solicitado
-                s.symbol = requested
-            s.timeframe = config["timeframe"]
-            s.lot = float(config.get("lot", 0.01))
-            s.sl_pips = float(config.get("sl_pips", 20))
-            s.tp_pips = float(config.get("tp_pips", 40))
-            s.daily_loss_limit = float(config.get("daily_loss_limit", 100))
-            s.max_positions = int(config.get("max_positions", 1))
-            s.day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-            s.realized_pnl_today = 0.0
-            s.last_candle_time = None
-            s.signals = []  # log limpio para la nueva sesión
-            s.closed_trades = []
-            s.error = None
-            s.stop_reason = None
-            s.started_at = datetime.now(tz=timezone.utc).isoformat()
-            s.status = "running"
-        s.save()
-        self._ensure_thread()
-
-    def pause(self) -> None:
-        with bot_state.lock():
-            if bot_state.status == "running":
-                bot_state.status = "paused"
-        bot_state.save()
-
-    def resume(self) -> None:
-        with bot_state.lock():
-            if bot_state.status == "paused":
-                bot_state.status = "running"
-                bot_state.stop_reason = None
+    def add(self, config: dict[str, Any]) -> None:
+        """Añade (o reemplaza) una estrategia activa con su config propia."""
+        sid = int(config["strategy_id"])
+        symbol = config["symbol"].upper()
+        try:
+            symbol = client.resolve_tradable_symbol(symbol)
+        except Exception:  # noqa: BLE001
+            pass
+        config = {**config, "symbol": symbol}
+        from .state import new_run
+        run = new_run(config, magic_for(sid))
+        bot_state.upsert(run)
         bot_state.save()
         self._ensure_thread()
 
-    def stop(self) -> None:
+    def _apply(self, strategy_id: int | None, fn) -> None:
         with bot_state.lock():
-            bot_state.status = "stopped"
-            bot_state.stop_reason = bot_state.stop_reason or "Detenido por el usuario."
+            runs = bot_state.runs.values() if strategy_id is None else [r for r in [bot_state.get(strategy_id)] if r]
+            for run in runs:
+                fn(run)
         bot_state.save()
-        self._stop.set()
+
+    def pause(self, strategy_id: int | None = None) -> None:
+        self._apply(strategy_id, lambda r: r.update(status="paused") if r["status"] == "running" else None)
+
+    def resume(self, strategy_id: int | None = None) -> None:
+        def _r(run):
+            if run["status"] in ("paused", "stopped"):
+                run["status"] = "running"
+                run["stop_reason"] = None
+                run["error"] = None
+        self._apply(strategy_id, _r)
+        self._ensure_thread()
+
+    def stop(self, strategy_id: int | None = None) -> None:
+        def _s(run):
+            run["status"] = "stopped"
+            run["stop_reason"] = run.get("stop_reason") or "Detenida por el usuario."
+        self._apply(strategy_id, _s)
+
+    def remove(self, strategy_id: int) -> None:
+        bot_state.remove(strategy_id)
+        bot_state.save()
 
     def panic(self) -> dict[str, Any]:
-        """Cierra TODAS las posiciones y detiene el bot. Prioridad de seguridad."""
-        open_before = dict(bot_state.open_tickets)
+        """Cierra TODAS las posiciones y detiene todas las estrategias."""
         result = executor.close_all(client)
-        # Registrar como cerrados por PANIC los trades que el bot tenía abiertos.
-        for ticket, rec in open_before.items():
-            info = None
-            try:
-                info = client.closed_position_pnl(ticket)
-            except Exception:  # noqa: BLE001
-                pass
-            bot_state.record_closed_trade(
-                {
-                    "ticket": ticket, "symbol": rec.get("symbol", bot_state.symbol),
-                    "direction": rec.get("direction"), "volume": rec.get("volume"),
-                    "open_price": rec.get("open_price"), "close_price": (info or {}).get("close_price"),
-                    "sl": rec.get("sl"), "tp": rec.get("tp"), "open_at": rec.get("open_at"),
-                    "close_at": datetime.now(tz=timezone.utc).isoformat(),
-                    "pnl": (info or {}).get("pnl", 0.0), "close_reason": "panic",
-                }
-            )
         with bot_state.lock():
-            bot_state.status = "stopped"
-            bot_state.stop_reason = "PANIC: todas las posiciones cerradas."
-            bot_state.open_tickets = {}
-            bot_state.pending_reasons = {}
+            for run in bot_state.runs.values():
+                open_before = dict(run.get("open_tickets", {}))
+                for ticket, rec in open_before.items():
+                    info = None
+                    try:
+                        info = client.closed_position_pnl(ticket)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    bot_state.record_closed_trade(run, {
+                        "ticket": ticket, "symbol": rec.get("symbol", run["symbol"]),
+                        "direction": rec.get("direction"), "volume": rec.get("volume"),
+                        "open_price": rec.get("open_price"), "close_price": (info or {}).get("close_price"),
+                        "sl": rec.get("sl"), "tp": rec.get("tp"), "open_at": rec.get("open_at"),
+                        "close_at": _now(), "pnl": (info or {}).get("pnl", 0.0), "close_reason": "panic",
+                        "open_reason": rec.get("open_reason"), "open_indicators": rec.get("open_indicators"),
+                    })
+                run["status"] = "stopped"
+                run["stop_reason"] = "PANIC: todas las posiciones cerradas."
+                run["open_tickets"] = {}
+                run["pending_reasons"] = {}
         bot_state.save()
         self._stop.set()
         return result
 
     # -- estado -----------------------------------------------------------
     def status(self) -> dict[str, Any]:
-        positions: list[dict[str, Any]] = []
-        floating = 0.0
+        positions_by_magic: dict[int, list[dict[str, Any]]] = {}
+        floating_by_magic: dict[int, float] = {}
         try:
-            positions = executor.bot_positions(client)
-            floating = sum(float(p.get("profit", 0.0)) for p in positions)
+            for run in bot_state.runs.values():
+                magic = run["magic"]
+                pos = executor.bot_positions(client, magic=magic)
+                positions_by_magic[magic] = pos
+                floating_by_magic[magic] = sum(float(p.get("profit", 0.0)) for p in pos)
         except Exception:  # noqa: BLE001 - status nunca debe romper
             pass
-        return bot_state.snapshot(positions, floating)
+        return bot_state.snapshot(positions_by_magic, floating_by_magic)
 
     # -- loop -------------------------------------------------------------
     def _ensure_thread(self) -> None:
@@ -125,88 +141,71 @@ class BotRunner:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                if bot_state.status != "running":
-                    self._stop.wait(self.poll)
-                    continue
-
-                bot_state.roll_day_if_needed()
-                self._reconcile_closed()
-
-                floating, daily = self._pnl()
-                if daily_limit_hit(bot_state, daily):
-                    with bot_state.lock():
-                        bot_state.status = "stopped"
-                        bot_state.stop_reason = f"Límite de pérdida diaria alcanzado (PnL {daily:.2f})."
-                    bot_state.save()
-                    break
-
-                self._evaluate_on_close()
-                bot_state.save()
-            except MT5Error as exc:
-                self._fail(f"MT5: {exc.message}")
-                break
-            except Exception as exc:  # noqa: BLE001 - fail-safe
-                self._fail(str(exc))
-                break
+            if not bot_state.runs:
+                break  # nada que gestionar
+            for run in bot_state.active_runs():
+                try:
+                    self._process_run(run)
+                except MT5Error as exc:
+                    self._fail(run, f"MT5: {exc.message}")
+                except Exception as exc:  # noqa: BLE001 - fail-safe por estrategia
+                    self._fail(run, str(exc))
+            bot_state.save()
             self._stop.wait(self.poll)
 
-    def _fail(self, message: str) -> None:
-        with bot_state.lock():
-            bot_state.status = "error"
-            bot_state.error = message
-            bot_state.stop_reason = "Error crítico: el bot se detuvo."
-        bot_state.save()
+    def _fail(self, run: dict[str, Any], message: str) -> None:
+        run["status"] = "error"
+        run["error"] = message
+        run["stop_reason"] = "Error crítico: estrategia detenida."
 
-    def _pnl(self) -> tuple[float, float]:
-        floating = sum(float(p.get("profit", 0.0)) for p in executor.bot_positions(client))
-        return floating, bot_state.realized_pnl_today + floating
+    def _process_run(self, run: dict[str, Any]) -> None:
+        bot_state.roll_day_if_needed(run)
+        self._reconcile(run)
+        floating, daily = self._pnl(run)
+        if daily_limit_hit(run["daily_loss_limit"], daily):
+            run["status"] = "stopped"
+            run["stop_reason"] = f"Límite de pérdida diaria alcanzado (PnL {daily:.2f})."
+            return
+        self._evaluate(run)
 
-    def _reconcile_closed(self) -> None:
-        """Detecta posiciones del bot cerradas y registra el trade con su motivo."""
-        current = {int(p["ticket"]): p for p in executor.bot_positions(client)}
-        for ticket in list(bot_state.open_tickets):
+    def _pnl(self, run: dict[str, Any]) -> tuple[float, float]:
+        floating = sum(float(p.get("profit", 0.0)) for p in executor.bot_positions(client, magic=run["magic"]))
+        return floating, run["realized_pnl_today"] + floating
+
+    def _reconcile(self, run: dict[str, Any]) -> None:
+        current = {int(p["ticket"]): p for p in executor.bot_positions(client, magic=run["magic"])}
+        for ticket in list(run["open_tickets"]):
             if ticket in current:
                 continue
-            rec = bot_state.open_tickets.pop(ticket, {})
+            rec = run["open_tickets"].pop(ticket, {})
             info = None
             try:
                 info = client.closed_position_pnl(ticket)
             except Exception:  # noqa: BLE001
                 pass
             close_price = (info or {}).get("close_price")
-            forced = bot_state.pending_reasons.pop(ticket, None)
+            forced = run["pending_reasons"].pop(ticket, None)
             reason = forced or _infer_close_reason(rec, close_price)
-            bot_state.record_closed_trade(
-                {
-                    "ticket": ticket,
-                    "symbol": rec.get("symbol", bot_state.symbol),
-                    "direction": rec.get("direction"),
-                    "volume": rec.get("volume"),
-                    "open_price": rec.get("open_price"),
-                    "close_price": close_price,
-                    "sl": rec.get("sl"),
-                    "tp": rec.get("tp"),
-                    "open_at": rec.get("open_at"),
-                    "close_at": datetime.now(tz=timezone.utc).isoformat(),
-                    "pnl": (info or {}).get("pnl", 0.0),
-                    "close_reason": reason,
-                    "open_reason": rec.get("open_reason"),
-                    "open_indicators": rec.get("open_indicators"),
-                }
-            )
+            bot_state.record_closed_trade(run, {
+                "ticket": ticket, "symbol": rec.get("symbol", run["symbol"]),
+                "direction": rec.get("direction"), "volume": rec.get("volume"),
+                "open_price": rec.get("open_price"), "close_price": close_price,
+                "sl": rec.get("sl"), "tp": rec.get("tp"), "open_at": rec.get("open_at"),
+                "close_at": _now(), "pnl": (info or {}).get("pnl", 0.0), "close_reason": reason,
+                "open_reason": rec.get("open_reason"), "open_indicators": rec.get("open_indicators"),
+            })
 
-    def _evaluate_on_close(self) -> None:
-        candles = client.candles(bot_state.symbol, bot_state.timeframe, count=300)
+    def _evaluate(self, run: dict[str, Any]) -> None:
+        candles = client.candles(run["symbol"], run["timeframe"], count=300)
         if len(candles) < 30:
             return
-        closed = candles[:-1]  # descartar la vela en formación
+        closed = candles[:-1]
         ctime = int(closed[-1]["time"])
-        if ctime == bot_state.last_candle_time:
-            return  # aún no cerró una vela nueva
-        bot_state.last_candle_time = ctime
+        if ctime == run["last_candle_time"]:
+            return
+        run["last_candle_time"] = ctime
 
-        result = evaluate_strategy(bot_state.strategy_type, bot_state.params, closed)
+        result = evaluate_strategy(run["strategy_type"], run["params"], closed)
         signal = result.get("signal", "none")
         reason = result.get("reason", "")
         indicators = result.get("indicators", {})
@@ -215,40 +214,31 @@ class BotRunner:
         exec_reason = reason
 
         if signal in ("buy", "sell"):
-            # Cerrar posiciones del bot en sentido contrario (señal opuesta).
-            for p in executor.bot_positions(client, bot_state.symbol):
+            # Cerrar SOLO las posiciones de ESTA estrategia en sentido contrario.
+            for p in executor.bot_positions(client, magic=run["magic"], symbol=run["symbol"]):
                 ptype = "buy" if p["type"] == 0 else "sell"
                 if ptype != signal:
                     try:
-                        bot_state.pending_reasons[int(p["ticket"])] = "signal"
+                        run["pending_reasons"][int(p["ticket"])] = "signal"
                         client.close_position(int(p["ticket"]))
                     except Exception:  # noqa: BLE001
-                        bot_state.pending_reasons.pop(int(p["ticket"]), None)
+                        run["pending_reasons"].pop(int(p["ticket"]), None)
 
-            same_symbol = executor.bot_positions(client, bot_state.symbol)
-            total_open = len(executor.bot_positions(client))
-            _, daily = self._pnl()
+            same = executor.bot_positions(client, magic=run["magic"], symbol=run["symbol"])
+            total_open = len(executor.bot_positions(client, magic=run["magic"]))
+            _, daily = self._pnl(run)
 
-            if not same_symbol:  # plano en este símbolo
-                ok, why = can_open(bot_state, total_open, daily)
+            if not same:
+                ok, why = can_open(run["max_positions"], run["daily_loss_limit"], total_open, daily)
                 if ok:
                     try:
-                        res = executor.open_market(
-                            client, bot_state.symbol, signal,
-                            bot_state.lot, bot_state.sl_pips, bot_state.tp_pips,
-                        )
+                        res = executor.open_market(client, run["symbol"], signal, run["lot"], run["sl_pips"], run["tp_pips"], magic=run["magic"], comment=run["comment"])
                         ticket = int(res.get("ticket") or 0)
                         if ticket:
-                            bot_state.open_tickets[ticket] = {
-                                "symbol": bot_state.symbol,
-                                "direction": signal,
-                                "volume": bot_state.lot,
-                                "open_price": res.get("entry_price"),
-                                "sl": res.get("sl"),
-                                "tp": res.get("tp"),
-                                "open_at": datetime.now(tz=timezone.utc).isoformat(),
-                                "open_reason": reason,  # por qué entró (Parte B)
-                                "open_indicators": indicators,
+                            run["open_tickets"][ticket] = {
+                                "symbol": run["symbol"], "direction": signal, "volume": run["lot"],
+                                "open_price": res.get("entry_price"), "sl": res.get("sl"), "tp": res.get("tp"),
+                                "open_at": _now(), "open_reason": reason, "open_indicators": indicators,
                             }
                         executed = True
                         exec_reason = reason
@@ -259,22 +249,7 @@ class BotRunner:
                     executed = False
                     exec_reason = why
 
-        bot_state.add_signal(bot_state.symbol, signal, executed, exec_reason, indicators, candle_time=ctime)
-
-
-def _infer_close_reason(rec: dict[str, Any], close_price: float | None) -> str:
-    """Deduce el motivo de cierre comparando el precio de cierre con SL/TP."""
-    sl = rec.get("sl")
-    tp = rec.get("tp")
-    if close_price is None:
-        return "manual"
-    pip = executor.pip_size(rec.get("symbol", "EURUSD"))
-    tol = 5 * pip  # tolerancia por slippage
-    if tp and abs(close_price - float(tp)) <= tol:
-        return "take_profit"
-    if sl and abs(close_price - float(sl)) <= tol:
-        return "stop_loss"
-    return "manual"
+        bot_state.add_signal(run, signal, executed, exec_reason, indicators, candle_time=ctime)
 
 
 bot_runner = BotRunner()

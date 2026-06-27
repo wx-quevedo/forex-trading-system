@@ -6,8 +6,8 @@ import BotDecisionPanel from '@/Components/BotDecisionPanel';
 import BotHistoryTable from '@/Components/BotHistoryTable';
 import TradeDetail from '@/Components/TradeDetail';
 import LiveClock from '@/Components/LiveClock';
-import { fmtMoney, fmtPrice, fmtTimeMs, pnlColor } from '@/lib/format';
-import type { BotClosedTrade, BotEvent, BotPosition, BotSignal, BotStatus, Candle, Strategy, TelegramSettings } from '@/types';
+import { fmtMoney, fmtTimeMs, pnlColor } from '@/lib/format';
+import type { BotClosedTrade, BotEvent, BotRunSummary, BotSignal, BotStatus, Candle, Strategy, TelegramSettings } from '@/types';
 
 interface Props {
     strategies: Pick<Strategy, 'id' | 'name' | 'pair' | 'timeframe' | 'parameters' | 'version'>[];
@@ -20,12 +20,8 @@ interface Props {
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 type Tab = 'positions' | 'history' | 'log' | 'journal';
 
-const STATUS_META: Record<string, { label: string; dot: string; pulse: boolean }> = {
-    running: { label: 'Activo', dot: 'bg-profit', pulse: true },
-    paused: { label: 'Pausado', dot: 'bg-warning', pulse: false },
-    stopped: { label: 'Detenido', dot: 'bg-text-secondary', pulse: false },
-    error: { label: 'Error', dot: 'bg-loss', pulse: true },
-};
+const DOT: Record<string, string> = { running: 'bg-profit', paused: 'bg-warning', stopped: 'bg-text-secondary', error: 'bg-loss' };
+const STATUS_LABEL: Record<string, string> = { running: 'Activo', paused: 'Pausado', stopped: 'Detenido', error: 'Error' };
 
 export default function Control({ strategies, status: initialStatus, telegram: initialTelegram, recentTrades, journal: initialJournal }: Props) {
     const [status, setStatus] = useState<BotStatus>(initialStatus);
@@ -34,58 +30,49 @@ export default function Control({ strategies, status: initialStatus, telegram: i
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const [strategyId, setStrategyId] = useState<number>(strategies[0]?.id ?? 0);
+    // Formulario "añadir estrategia"
+    const [addId, setAddId] = useState<number>(strategies[0]?.id ?? 0);
     const [lot, setLot] = useState(0.01);
     const [dailyLossLimit, setDailyLossLimit] = useState(100);
     const [maxPositions, setMaxPositions] = useState(1);
-    // Parte E: recuerda la última selección de timeframe (no fuerza H1).
     const [timeframe, setTimeframe] = useState(() => localStorage.getItem('forexbot.bot_tf') ?? '');
-    const setTf = (v: string) => {
-        setTimeframe(v);
-        localStorage.setItem('forexbot.bot_tf', v);
-    };
+    const setTf = (v: string) => { setTimeframe(v); localStorage.setItem('forexbot.bot_tf', v); };
 
-    const [candles, setCandles] = useState<Candle[]>([]);
-    const [digits, setDigits] = useState(5);
+    const [selectedSid, setSelectedSid] = useState<number | null>(null);
+    const [filterSid, setFilterSid] = useState<number | null>(null);
+    const [tab, setTab] = useState<Tab>(() => (localStorage.getItem('forexbot.bot_tab') as Tab) ?? 'positions');
+    const setToolboxTab = (t: Tab) => { setTab(t); localStorage.setItem('forexbot.bot_tab', t); };
     const [selectedSignal, setSelectedSignal] = useState<BotSignal | null>(null);
     const [selectedTrade, setSelectedTrade] = useState<BotClosedTrade | null>(null);
-    const [tab, setTab] = useState<Tab>(() => (localStorage.getItem('forexbot.bot_tab') as Tab) ?? 'positions');
-    const setToolboxTab = (t: Tab) => {
-        setTab(t);
-        localStorage.setItem('forexbot.bot_tab', t);
-    };
+    const [candles, setCandles] = useState<Candle[]>([]);
+    const [digits, setDigits] = useState(5);
 
-    const running = status.status === 'running';
-    const paused = status.status === 'paused';
-    const active = running || paused;
-    const selected = strategies.find((s) => s.id === strategyId);
+    const runs = status.runs ?? [];
+    const stratById = useMemo(() => Object.fromEntries(strategies.map((s) => [s.id, s])), [strategies]);
+    const strategyName = (id?: number) => (id != null ? stratById[id]?.name ?? `#${id}` : '—');
+    const addStrategy = strategies.find((s) => s.id === addId);
+
+    useEffect(() => {
+        if (runs.length === 0) { setSelectedSid(null); return; }
+        if (!runs.some((r) => r.strategy_id === selectedSid)) setSelectedSid(runs[0].strategy_id);
+    }, [runs, selectedSid]);
+
+    const selectedRun = runs.find((r) => r.strategy_id === selectedSid) ?? runs[0] ?? null;
 
     const chart = useMemo(() => {
-        if (active && status.strategy) {
-            return {
-                symbol: status.strategy.symbol,
-                timeframe: status.strategy.timeframe,
-                type: status.strategy.type,
-                params: (status.strategy.params ?? {}) as Record<string, number | string>,
-            };
+        if (selectedRun) {
+            return { symbol: selectedRun.strategy.symbol, timeframe: selectedRun.strategy.timeframe, type: selectedRun.strategy.type, params: (selectedRun.strategy.params ?? {}) as Record<string, number | string>, lot: selectedRun.config.lot };
         }
-        const p = selected?.parameters;
-        return {
-            symbol: selected?.pair ?? 'EURUSD',
-            timeframe: timeframe || selected?.timeframe || 'H1',
-            type: p?.type ?? 'ma_cross',
-            params: (p?.indicators ?? {}) as Record<string, number | string>,
-        };
-    }, [active, status.strategy, selected, timeframe]);
+        const p = addStrategy?.parameters;
+        return { symbol: addStrategy?.pair ?? 'EURUSD', timeframe: timeframe || addStrategy?.timeframe || 'H1', type: p?.type ?? 'ma_cross', params: (p?.indicators ?? {}) as Record<string, number | string>, lot };
+    }, [selectedRun, addStrategy, timeframe, lot]);
 
     const fetchCandles = useRef<() => void>(() => {});
     fetchCandles.current = async () => {
         try {
             const { data } = await window.axios.get(`/api/market/candles/${encodeURIComponent(chart.symbol)}`, { params: { timeframe: chart.timeframe, count: 300 } });
             if (data.data) setCandles(data.data as Candle[]);
-        } catch {
-            /* el bridge puede caer */
-        }
+        } catch { /* bridge */ }
     };
     useEffect(() => {
         setCandles([]);
@@ -100,13 +87,9 @@ export default function Control({ strategies, status: initialStatus, telegram: i
             try {
                 const { data } = await window.axios.get(`/api/market/symbol/${encodeURIComponent(chart.symbol)}`);
                 if (alive && data.data?.digits) setDigits(Number(data.data.digits));
-            } catch {
-                /* default 5 */
-            }
+            } catch { /* default 5 */ }
         })();
-        return () => {
-            alive = false;
-        };
+        return () => { alive = false; };
     }, [chart.symbol]);
 
     const poll = useRef<() => void>(() => {});
@@ -115,18 +98,13 @@ export default function Control({ strategies, status: initialStatus, telegram: i
             const { data } = await window.axios.get('/bot/status');
             setStatus(data as BotStatus);
             if (data.journal) setJournal(data.journal as BotEvent[]);
-        } catch {
-            /* el bridge puede caer */
-        }
+        } catch { /* bridge */ }
     };
     useEffect(() => {
         const id = window.setInterval(() => poll.current(), 3000);
         const ch = window.Echo?.channel('bot');
         ch?.listen('.bot.updated', (e: { status: BotStatus }) => setStatus(e.status));
-        return () => {
-            window.clearInterval(id);
-            ch?.stopListening('.bot.updated');
-        };
+        return () => { window.clearInterval(id); ch?.stopListening('.bot.updated'); };
     }, []);
 
     const action = async (url: string, body?: Record<string, unknown>) => {
@@ -144,19 +122,15 @@ export default function Control({ strategies, status: initialStatus, telegram: i
         }
     };
 
-    const start = () => action('/bot/start', { strategy_id: strategyId, lot, daily_loss_limit: dailyLossLimit, max_positions: maxPositions, timeframe: timeframe || selected?.timeframe });
-    const panic = () => {
-        if (confirm('¿Cerrar TODAS las posiciones abiertas y detener el bot?')) action('/bot/panic');
-    };
+    const add = () => action('/bot/start', { strategy_id: addId, lot, daily_loss_limit: dailyLossLimit, max_positions: maxPositions, timeframe: timeframe || addStrategy?.timeframe });
+    const panic = () => { if (confirm('¿Cerrar TODAS las posiciones de TODAS las estrategias y detener el bot?')) action('/bot/panic'); };
 
-    const meta = STATUS_META[status.status] ?? STATUS_META.stopped;
-    const cfg = status.config;
     const dailyPnl = status.daily_pnl ?? 0;
-    const limit = active ? cfg?.daily_loss_limit ?? dailyLossLimit : dailyLossLimit;
-    const lossPct = limit > 0 ? Math.min(100, Math.max(0, (-dailyPnl / limit) * 100)) : 0;
-    const tfValue = active ? status.strategy?.timeframe ?? 'H1' : timeframe || selected?.timeframe || 'H1';
+    const positions = status.positions ?? [];
+    const chartPositions = selectedRun ? positions.filter((p) => p.strategy_id === selectedRun.strategy_id) : [];
+    const chartSignals = selectedRun ? (status.signals ?? []).filter((s) => s.strategy_id === selectedRun.strategy_id) : [];
+    const chartClosed = selectedRun ? (status.closed_trades ?? []).filter((t) => t.strategy_id === selectedRun.strategy_id) : [];
 
-    // Historial: sesión actual (en vivo) + persistido en BD, único por ticket.
     const history = useMemo(() => {
         const map = new Map<number, BotClosedTrade>();
         for (const t of recentTrades) map.set(t.ticket, t);
@@ -164,172 +138,189 @@ export default function Control({ strategies, status: initialStatus, telegram: i
         return Array.from(map.values()).sort((a, b) => (b.close_at ?? '').localeCompare(a.close_at ?? ''));
     }, [recentTrades, status.closed_trades]);
 
-    const positions = status.positions ?? [];
+    const byFilter = <T extends { strategy_id?: number }>(items: T[]) => (filterSid == null ? items : items.filter((i) => i.strategy_id === filterSid));
 
     return (
-        <AppLayout title="Bot en vivo">
-            <Head title="Bot en vivo" />
+        <AppLayout title="Bot multi-estrategia">
+            <Head title="Bot" />
 
-            {/* HEADER: estado · reloj ms · PANIC */}
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                    <span className={`h-3 w-3 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse-dot' : ''}`} />
+                    <span className={`h-3 w-3 rounded-full ${DOT[status.status] ?? DOT.stopped} ${status.status === 'running' || status.status === 'error' ? 'animate-pulse-dot' : ''}`} />
                     <div>
-                        <div className="text-sm font-semibold">Bot: {meta.label}</div>
-                        {status.stop_reason && <div className="text-xs text-text-secondary">{status.stop_reason}</div>}
-                        {status.error && <div className="text-xs text-loss">{status.error}</div>}
+                        <div className="text-sm font-semibold">Bot: {STATUS_LABEL[status.status] ?? '—'} · {runs.filter((r) => r.status === 'running').length} activas</div>
+                        <div className="font-mono text-xs text-text-secondary">PnL día: <span className={pnlColor(dailyPnl)}>{fmtMoney(dailyPnl)}</span></div>
                     </div>
                 </div>
                 <div className="flex items-center gap-4">
                     <LiveClock />
-                    <button type="button" onClick={panic} disabled={busy} className="rounded-md bg-loss px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:opacity-90 disabled:opacity-50">
-                        PANIC — Cerrar todo
-                    </button>
+                    <button type="button" onClick={panic} disabled={busy} className="rounded-md bg-loss px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:opacity-90 disabled:opacity-50">PANIC — Cerrar todo</button>
                 </div>
             </div>
 
             {error && <div className="mb-4 rounded-lg border border-loss/40 bg-loss/10 px-4 py-2 text-sm text-loss">{error}</div>}
 
-            {/* LAYOUT estilo MT5: sidebar izq + (chart arriba / toolbox abajo) */}
-            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[340px_1fr]">
                 {/* SIDEBAR */}
                 <div className="space-y-5">
+                    {/* Añadir estrategia */}
                     <section className="rounded-lg border border-border bg-bg-surface p-4">
-                        <h2 className="mb-3 text-sm font-semibold">Configuración</h2>
+                        <h2 className="mb-3 text-sm font-semibold">Añadir estrategia</h2>
                         <label className="mb-3 block">
                             <span className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">Estrategia</span>
-                            <select value={strategyId} onChange={(e) => setStrategyId(Number(e.target.value))} disabled={active} className="input">
-                                {strategies.map((s) => (
-                                    <option key={s.id} value={s.id}>
-                                        {s.name} v{s.version} ({s.pair} · {s.timeframe})
-                                    </option>
-                                ))}
+                            <select value={addId} onChange={(e) => setAddId(Number(e.target.value))} className="input">
+                                {strategies.map((s) => (<option key={s.id} value={s.id}>{s.name} v{s.version} ({s.pair} · {s.timeframe})</option>))}
                             </select>
                         </label>
                         <div className="grid grid-cols-2 gap-3">
-                            <Field label="Lote fijo">
-                                <input type="number" step={0.01} min={0.01} value={lot} disabled={active} onChange={(e) => setLot(Number(e.target.value))} className="input font-mono" />
-                            </Field>
-                            <Field label="Timeframe">
-                                <select value={tfValue} disabled={active} onChange={(e) => setTf(e.target.value)} className="input font-mono">
-                                    {TIMEFRAMES.map((tf) => (
-                                        <option key={tf} value={tf}>{tf}</option>
-                                    ))}
+                            <FieldLab label="Lote fijo"><input type="number" step={0.01} min={0.01} value={lot} onChange={(e) => setLot(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                            <FieldLab label="Timeframe">
+                                <select value={timeframe || addStrategy?.timeframe || 'H1'} onChange={(e) => setTf(e.target.value)} className="input font-mono">
+                                    {TIMEFRAMES.map((tf) => (<option key={tf} value={tf}>{tf}</option>))}
                                 </select>
-                            </Field>
-                            <Field label="Límite pérdida diaria">
-                                <input type="number" min={0} value={dailyLossLimit} disabled={active} onChange={(e) => setDailyLossLimit(Number(e.target.value))} className="input font-mono" />
-                            </Field>
-                            <Field label="Máx posiciones">
-                                <input type="number" min={1} max={20} value={maxPositions} disabled={active} onChange={(e) => setMaxPositions(Number(e.target.value))} className="input font-mono" />
-                            </Field>
+                            </FieldLab>
+                            <FieldLab label="Límite pérdida diaria"><input type="number" min={0} value={dailyLossLimit} onChange={(e) => setDailyLossLimit(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                            <FieldLab label="Máx posiciones"><input type="number" min={1} max={20} value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} className="input font-mono" /></FieldLab>
                         </div>
-
-                        <div className="mt-4 flex flex-wrap gap-2">
-                            {!active && (
-                                <button type="button" onClick={start} disabled={busy || !strategyId} className="flex-1 rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">Start</button>
-                            )}
-                            {running && (
-                                <button type="button" onClick={() => action('/bot/pause')} disabled={busy} className="flex-1 rounded-md bg-warning px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">Pause</button>
-                            )}
-                            {paused && (
-                                <button type="button" onClick={() => action('/bot/resume')} disabled={busy} className="flex-1 rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">Resume</button>
-                            )}
-                            {active && (
-                                <button type="button" onClick={() => action('/bot/stop')} disabled={busy} className="flex-1 rounded-md border border-border px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-bg-elevated disabled:opacity-50">Stop</button>
-                            )}
-                        </div>
+                        <button type="button" onClick={add} disabled={busy || !addId} className="mt-4 w-full rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">+ Añadir a la ejecución</button>
+                        <p className="mt-2 text-[11px] text-text-secondary">Cada estrategia opera con su propio lote y límites (riesgo independiente).</p>
                     </section>
 
+                    {/* Estrategias activas */}
                     <section className="rounded-lg border border-border bg-bg-surface p-4">
-                        <h2 className="mb-3 text-sm font-semibold">PnL del día</h2>
-                        <div className="mb-2 flex items-end justify-between">
-                            <span className={`font-mono text-2xl font-semibold ${pnlColor(dailyPnl)}`}>{fmtMoney(dailyPnl)}</span>
-                            <span className="font-mono text-xs text-text-secondary">límite −{fmtMoney(limit)}</span>
-                        </div>
-                        <div className="h-2 w-full overflow-hidden rounded-full bg-bg-elevated">
-                            <div className={`h-full ${lossPct > 80 ? 'bg-loss' : 'bg-warning'}`} style={{ width: `${lossPct}%` }} />
-                        </div>
-                        <div className="mt-2 flex justify-between font-mono text-[11px] text-text-secondary">
-                            <span>realizado {fmtMoney(status.realized_pnl_today ?? 0)}</span>
-                            <span>flotante {fmtMoney(status.floating_pnl ?? 0)}</span>
-                        </div>
+                        <h2 className="mb-3 text-sm font-semibold">Estrategias activas ({runs.length})</h2>
+                        {runs.length === 0 ? (
+                            <p className="py-3 text-center text-sm text-text-secondary">Ninguna. Añade una arriba.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {runs.map((r) => (
+                                    <RunRow key={r.strategy_id} run={r} name={strategyName(r.strategy_id)} selected={r.strategy_id === selectedRun?.strategy_id} busy={busy}
+                                        onSelect={() => setSelectedSid(r.strategy_id)}
+                                        onPause={() => action('/bot/pause', { strategy_id: r.strategy_id })}
+                                        onResume={() => action('/bot/resume', { strategy_id: r.strategy_id })}
+                                        onStop={() => action('/bot/stop', { strategy_id: r.strategy_id })}
+                                        onRemove={() => action('/bot/remove', { strategy_id: r.strategy_id })}
+                                    />
+                                ))}
+                            </div>
+                        )}
                     </section>
 
+                    <Exposure exposure={status.exposure ?? {}} />
                     <TelegramPanel telegram={telegram} setTelegram={setTelegram} />
                 </div>
 
-                {/* MAIN: chart SIEMPRE visible + decisión + toolbox */}
+                {/* MAIN */}
                 <div className="min-w-0 space-y-5">
                     <section className="rounded-lg border border-border bg-bg-surface p-2">
                         <div className="mb-1 flex items-center justify-between px-2 pt-1">
-                            <h2 className="text-sm font-semibold">{chart.symbol} · {chart.timeframe} · {chart.type}</h2>
-                            <span className="font-mono text-[10px] text-text-secondary">{candles.length} velas</span>
+                            <h2 className="text-sm font-semibold">
+                                {selectedRun ? `${strategyName(selectedRun.strategy_id)} · ` : ''}{chart.symbol} · {chart.timeframe} · {chart.type}
+                            </h2>
+                            {runs.length > 1 && (
+                                <select value={selectedRun?.strategy_id ?? ''} onChange={(e) => setSelectedSid(Number(e.target.value))} className="input max-w-[180px] py-1 text-xs">
+                                    {runs.map((r) => (<option key={r.strategy_id} value={r.strategy_id}>{strategyName(r.strategy_id)}</option>))}
+                                </select>
+                            )}
                         </div>
                         {candles.length === 0 ? (
                             <p className="p-10 text-center text-sm text-text-secondary">Cargando velas…</p>
                         ) : (
-                            <BotLiveChart
-                                candles={candles}
-                                digits={digits}
-                                strategyType={chart.type}
-                                params={chart.params}
-                                signals={status.signals ?? []}
-                                positions={positions}
-                                closedTrades={status.closed_trades ?? []}
-                                onSelectSignal={setSelectedSignal}
-                            />
+                            <BotLiveChart candles={candles} digits={digits} strategyType={chart.type} params={chart.params} signals={chartSignals} positions={chartPositions} closedTrades={chartClosed} onSelectSignal={setSelectedSignal} />
                         )}
                     </section>
 
-                    {selectedSignal && (
-                        <BotDecisionPanel signal={selectedSignal} strategyType={chart.type} params={chart.params} lot={cfg?.lot ?? lot} digits={digits} onClose={() => setSelectedSignal(null)} />
-                    )}
+                    {selectedSignal && <BotDecisionPanel signal={selectedSignal} strategyType={chart.type} params={chart.params} lot={chart.lot} digits={digits} onClose={() => setSelectedSignal(null)} />}
 
-                    {/* TOOLBOX estilo MT5 */}
+                    {/* TOOLBOX */}
                     <section className="rounded-lg border border-border bg-bg-surface">
-                        <div className="flex gap-1 border-b border-border p-1">
+                        <div className="flex flex-wrap items-center gap-1 border-b border-border p-1">
                             {([['positions', `Posiciones (${positions.length})`], ['history', 'Historial'], ['log', 'Log de señales'], ['journal', 'Journal']] as [Tab, string][]).map(([t, label]) => (
-                                <button key={t} type="button" onClick={() => setToolboxTab(t)} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t ? 'bg-bg-elevated text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}>
-                                    {label}
-                                </button>
+                                <button key={t} type="button" onClick={() => setToolboxTab(t)} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t ? 'bg-bg-elevated text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}>{label}</button>
                             ))}
+                            <select value={filterSid ?? ''} onChange={(e) => setFilterSid(e.target.value ? Number(e.target.value) : null)} className="input ml-auto max-w-[180px] py-1 text-xs">
+                                <option value="">Todas las estrategias</option>
+                                {runs.map((r) => (<option key={r.strategy_id} value={r.strategy_id}>{strategyName(r.strategy_id)}</option>))}
+                            </select>
                         </div>
                         <div>
-                            {tab === 'positions' && <Positions positions={positions} maxPositions={cfg?.max_positions} digits={digits} />}
-                            {tab === 'history' && <BotHistoryTable trades={history} digits={digits} onSelect={setSelectedTrade} />}
-                            {tab === 'log' && <SignalLogLive signals={status.signals ?? []} onSelect={setSelectedSignal} />}
-                            {tab === 'journal' && <Journal events={journal} />}
+                            {tab === 'positions' && <PositionsTable positions={byFilter(positions)} digits={digits} strategyName={strategyName} />}
+                            {tab === 'history' && <BotHistoryTable trades={byFilter(history)} digits={digits} strategyName={strategyName} onSelect={setSelectedTrade} />}
+                            {tab === 'log' && <LogTable signals={byFilter(status.signals ?? [])} strategyName={strategyName} onSelect={setSelectedSignal} />}
+                            {tab === 'journal' && <Journal events={byFilter(journal)} strategyName={strategyName} />}
                         </div>
                     </section>
                 </div>
             </div>
 
             {selectedTrade && (
-                <TradeDetail
-                    trade={selectedTrade}
-                    symbol={selectedTrade.symbol}
-                    timeframe={chart.timeframe}
-                    digits={digits}
-                    strategyType={chart.type}
-                    params={chart.params}
-                    onClose={() => setSelectedTrade(null)}
-                />
+                <TradeDetail trade={selectedTrade} symbol={selectedTrade.symbol} timeframe={chart.timeframe} digits={digits} strategyType={chart.type} params={chart.params} onClose={() => setSelectedTrade(null)} />
             )}
         </AppLayout>
     );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function FieldLab({ label, children }: { label: string; children: React.ReactNode }) {
+    return (<label className="block"><span className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">{label}</span>{children}</label>);
+}
+
+function RunRow({ run, name, selected, busy, onSelect, onPause, onResume, onStop, onRemove }: {
+    run: BotRunSummary; name: string; selected: boolean; busy: boolean;
+    onSelect: () => void; onPause: () => void; onResume: () => void; onStop: () => void; onRemove: () => void;
+}) {
     return (
-        <label className="block">
-            <span className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">{label}</span>
-            {children}
-        </label>
+        <div onClick={onSelect} className={`cursor-pointer rounded-md border bg-bg-elevated px-3 py-2 ${selected ? 'border-accent' : 'border-border'}`}>
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${DOT[run.status] ?? DOT.stopped}`} />
+                    <span className="text-sm font-medium text-text-primary">{name}</span>
+                </div>
+                <span className={`font-mono text-xs font-semibold ${pnlColor(run.daily_pnl)}`}>{fmtMoney(run.daily_pnl)}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-text-secondary">
+                <span>{run.strategy.symbol} · {run.strategy.timeframe} · {run.config.lot} lote · {run.open_positions}/{run.config.max_positions} pos</span>
+            </div>
+            <div className="mt-2 flex gap-1" onClick={(e) => e.stopPropagation()}>
+                {run.status === 'running' && <MiniBtn onClick={onPause} disabled={busy}>Pausar</MiniBtn>}
+                {(run.status === 'paused' || run.status === 'stopped' || run.status === 'error') && <MiniBtn onClick={onResume} disabled={busy}>Reanudar</MiniBtn>}
+                {(run.status === 'running' || run.status === 'paused') && <MiniBtn onClick={onStop} disabled={busy}>Detener</MiniBtn>}
+                <MiniBtn onClick={onRemove} disabled={busy} danger>Quitar</MiniBtn>
+            </div>
+            {run.stop_reason && <div className="mt-1 text-[10px] text-text-secondary">{run.stop_reason}</div>}
+        </div>
     );
 }
 
-function Positions({ positions, maxPositions, digits }: { positions: BotPosition[]; maxPositions?: number; digits: number }) {
+function MiniBtn({ children, onClick, disabled, danger }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean }) {
+    return <button type="button" onClick={onClick} disabled={disabled} className={`rounded border border-border px-2 py-0.5 text-[11px] ${danger ? 'text-loss' : 'text-text-primary'} hover:bg-bg-surface disabled:opacity-40`}>{children}</button>;
+}
+
+function Exposure({ exposure }: { exposure: Record<string, { buy: number; sell: number; count: number }> }) {
+    const rows = Object.entries(exposure);
+    return (
+        <section className="rounded-lg border border-border bg-bg-surface p-4">
+            <h2 className="mb-2 text-sm font-semibold">Exposición por par</h2>
+            {rows.length === 0 ? (
+                <p className="text-xs text-text-secondary">Sin posiciones abiertas.</p>
+            ) : (
+                <div className="space-y-1">
+                    {rows.map(([sym, ex]) => {
+                        const net = ex.buy - ex.sell;
+                        const hedged = ex.buy > 0 && ex.sell > 0;
+                        return (
+                            <div key={sym} className="flex items-center justify-between font-mono text-xs">
+                                <span className="text-text-primary">{sym}{hedged && <span className="ml-1 text-warning">⚠ opuestas</span>}</span>
+                                <span className="text-text-secondary">B {ex.buy} / S {ex.sell} · neto <span className={pnlColor(net)}>{net.toFixed(2)}</span></span>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </section>
+    );
+}
+
+function PositionsTable({ positions, digits, strategyName }: { positions: import('@/types').BotPosition[]; digits: number; strategyName: (id?: number) => string }) {
     const px = (v: number) => v.toFixed(digits);
     if (positions.length === 0) return <p className="p-6 text-center text-sm text-text-secondary">Sin posiciones abiertas.</p>;
     return (
@@ -337,19 +328,15 @@ function Positions({ positions, maxPositions, digits }: { positions: BotPosition
             <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-bg-surface">
                     <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
-                        <th className="px-3 py-2 font-medium">Símbolo</th>
-                        <th className="px-3 py-2 font-medium">Dir</th>
-                        <th className="px-3 py-2 font-medium text-right">Lote</th>
-                        <th className="px-3 py-2 font-medium text-right">Entrada</th>
-                        <th className="px-3 py-2 font-medium text-right">Actual</th>
-                        <th className="px-3 py-2 font-medium text-right">SL</th>
-                        <th className="px-3 py-2 font-medium text-right">TP</th>
-                        <th className="px-3 py-2 font-medium text-right">PnL</th>
+                        <th className="px-3 py-2 font-medium">Estrategia</th><th className="px-3 py-2 font-medium">Símbolo</th><th className="px-3 py-2 font-medium">Dir</th>
+                        <th className="px-3 py-2 font-medium text-right">Lote</th><th className="px-3 py-2 font-medium text-right">Entrada</th><th className="px-3 py-2 font-medium text-right">Actual</th>
+                        <th className="px-3 py-2 font-medium text-right">SL</th><th className="px-3 py-2 font-medium text-right">TP</th><th className="px-3 py-2 font-medium text-right">PnL</th>
                     </tr>
                 </thead>
                 <tbody>
                     {positions.map((p) => (
                         <tr key={p.ticket} className="border-b border-border/40 last:border-0">
+                            <td className="px-3 py-1.5 text-xs text-text-primary">{strategyName(p.strategy_id)}</td>
                             <td className="px-3 py-1.5 font-mono text-xs text-text-primary">{p.symbol}</td>
                             <td className={`px-3 py-1.5 font-mono text-xs font-semibold ${p.type === 0 ? 'text-profit' : 'text-loss'}`}>{p.type === 0 ? 'BUY' : 'SELL'}</td>
                             <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{p.volume}</td>
@@ -362,34 +349,27 @@ function Positions({ positions, maxPositions, digits }: { positions: BotPosition
                     ))}
                 </tbody>
             </table>
-            {maxPositions != null && <div className="px-3 py-1.5 text-right font-mono text-[10px] text-text-secondary">{positions.length} / {maxPositions} máx</div>}
         </div>
     );
 }
 
-function SignalLogLive({ signals, onSelect }: { signals: BotSignal[]; onSelect: (s: BotSignal) => void }) {
+function LogTable({ signals, strategyName, onSelect }: { signals: BotSignal[]; strategyName: (id?: number) => string; onSelect: (s: BotSignal) => void }) {
     if (signals.length === 0) return <p className="p-6 text-center text-sm text-text-secondary">Sin evaluaciones todavía.</p>;
     return (
         <div className="max-h-[300px] overflow-auto">
             <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-bg-surface">
                     <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
-                        <th className="px-3 py-2 font-medium">Hora</th>
-                        <th className="px-3 py-2 font-medium">Señal</th>
-                        <th className="px-3 py-2 font-medium">Estado</th>
-                        <th className="px-3 py-2 font-medium">Motivo</th>
+                        <th className="px-3 py-2 font-medium">Estrategia</th><th className="px-3 py-2 font-medium">Hora</th><th className="px-3 py-2 font-medium">Señal</th><th className="px-3 py-2 font-medium">Estado</th><th className="px-3 py-2 font-medium">Motivo</th>
                     </tr>
                 </thead>
                 <tbody>
                     {signals.map((s) => (
-                        <tr key={s.seq} onClick={() => onSelect(s)} className="cursor-pointer border-b border-border/40 last:border-0 hover:bg-bg-elevated">
+                        <tr key={`${s.strategy_id}-${s.seq}`} onClick={() => onSelect(s)} className="cursor-pointer border-b border-border/40 last:border-0 hover:bg-bg-elevated">
+                            <td className="px-3 py-1.5 text-xs text-text-primary">{strategyName(s.strategy_id)}</td>
                             <td className="px-3 py-1.5 font-mono text-xs text-text-secondary">{fmtTimeMs(s.evaluated_at)}</td>
-                            <td className="px-3 py-1.5">
-                                <span className={`font-mono text-xs font-semibold ${s.signal_type === 'buy' ? 'text-profit' : s.signal_type === 'sell' ? 'text-loss' : 'text-text-secondary'}`}>{s.signal_type.toUpperCase()}</span>
-                            </td>
-                            <td className="px-3 py-1.5">
-                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${s.executed ? 'bg-accent/15 text-accent' : 'bg-bg-elevated text-text-secondary'}`}>{s.executed ? 'Ejecutada' : 'No ejecutada'}</span>
-                            </td>
+                            <td className="px-3 py-1.5"><span className={`font-mono text-xs font-semibold ${s.signal_type === 'buy' ? 'text-profit' : s.signal_type === 'sell' ? 'text-loss' : 'text-text-secondary'}`}>{s.signal_type.toUpperCase()}</span></td>
+                            <td className="px-3 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${s.executed ? 'bg-accent/15 text-accent' : 'bg-bg-elevated text-text-secondary'}`}>{s.executed ? 'Ejecutada' : 'No ejecutada'}</span></td>
                             <td className="px-3 py-1.5 text-xs text-text-secondary">{s.reason}</td>
                         </tr>
                     ))}
@@ -399,16 +379,17 @@ function SignalLogLive({ signals, onSelect }: { signals: BotSignal[]; onSelect: 
     );
 }
 
-const SEVERITY_CLS: Record<string, string> = { info: 'text-text-secondary', warning: 'text-warning', error: 'text-loss' };
+const SEV: Record<string, string> = { info: 'text-text-secondary', warning: 'text-warning', error: 'text-loss' };
 
-function Journal({ events }: { events: BotEvent[] }) {
+function Journal({ events, strategyName }: { events: BotEvent[]; strategyName: (id?: number) => string }) {
     if (events.length === 0) return <p className="p-6 text-center text-sm text-text-secondary">Sin eventos del bot todavía.</p>;
     return (
         <div className="max-h-[300px] overflow-auto p-2">
             {events.map((e) => (
                 <div key={e.id} className="flex items-start gap-3 border-b border-border/30 px-2 py-1.5 last:border-0">
                     <span className="font-mono text-[11px] text-text-secondary">{fmtTimeMs(e.occurred_at)}</span>
-                    <span className={`font-mono text-[10px] uppercase ${SEVERITY_CLS[e.severity] ?? 'text-text-secondary'}`}>{e.severity}</span>
+                    <span className={`font-mono text-[10px] uppercase ${SEV[e.severity] ?? 'text-text-secondary'}`}>{e.severity}</span>
+                    <span className="text-[11px] text-accent">{e.strategy_id ? strategyName(e.strategy_id) : 'global'}</span>
                     <span className="text-xs text-text-primary">{e.message}</span>
                 </div>
             ))}
@@ -421,13 +402,8 @@ function TelegramPanel({ telegram, setTelegram }: { telegram: TelegramSettings; 
     const save = async (next: TelegramSettings) => {
         setTelegram(next);
         setSaving(true);
-        try {
-            await window.axios.post('/bot/telegram', { enabled: next.enabled, events: next.events });
-        } finally {
-            setSaving(false);
-        }
+        try { await window.axios.post('/bot/telegram', { enabled: next.enabled, events: next.events }); } finally { setSaving(false); }
     };
-
     return (
         <section className="rounded-lg border border-border bg-bg-surface p-4">
             <div className="mb-3 flex items-center justify-between">
@@ -435,21 +411,17 @@ function TelegramPanel({ telegram, setTelegram }: { telegram: TelegramSettings; 
                 {saving && <span className="text-[10px] text-text-secondary">guardando…</span>}
             </div>
             {!telegram.configured ? (
-                <p className="text-xs text-text-secondary">
-                    No configurado. Define <code>TELEGRAM_BOT_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code> en el <code>.env</code>.
-                </p>
+                <p className="text-xs text-text-secondary">No configurado. Define <code>TELEGRAM_BOT_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code> en el <code>.env</code>.</p>
             ) : (
                 <>
                     <label className="mb-3 flex items-center gap-2 text-sm text-text-primary">
-                        <input type="checkbox" checked={telegram.enabled} onChange={(e) => save({ ...telegram, enabled: e.target.checked })} />
-                        Activar notificaciones
+                        <input type="checkbox" checked={telegram.enabled} onChange={(e) => save({ ...telegram, enabled: e.target.checked })} /> Activar notificaciones
                     </label>
                     {telegram.enabled && (
                         <div className="grid grid-cols-2 gap-1.5">
                             {Object.entries(telegram.events).map(([ev, on]) => (
                                 <label key={ev} className="flex items-center gap-1.5 text-xs text-text-secondary">
-                                    <input type="checkbox" checked={on} onChange={(e) => save({ ...telegram, events: { ...telegram.events, [ev]: e.target.checked } })} />
-                                    {ev}
+                                    <input type="checkbox" checked={on} onChange={(e) => save({ ...telegram, events: { ...telegram.events, [ev]: e.target.checked } })} /> {ev}
                                 </label>
                             ))}
                         </div>

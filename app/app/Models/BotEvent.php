@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class BotEvent extends Model
 {
-    protected $fillable = ['bot_run_id', 'type', 'severity', 'message', 'occurred_at'];
+    protected $fillable = ['bot_run_id', 'strategy_id', 'type', 'severity', 'message', 'occurred_at'];
 
     protected $casts = ['occurred_at' => 'datetime'];
 

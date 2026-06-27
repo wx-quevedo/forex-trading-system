@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\BotController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\LaboratoryController;
 use App\Http\Controllers\MarketController;
 use App\Http\Controllers\StrategyController;
 use App\Http\Controllers\WorkbenchController;
@@ -22,6 +23,10 @@ Route::middleware('auth')->group(function () {
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
 
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+
+    // --- Laboratorio de Estrategias (Fase 8C) ---
+    Route::get('/laboratory', [LaboratoryController::class, 'show'])->name('laboratory');
+    Route::post('/laboratory', [LaboratoryController::class, 'save'])->name('laboratory.save');
 
     // --- Módulo de Estrategias ---
     Route::post('/strategies/{strategy}/version', [StrategyController::class, 'version'])->name('strategies.version');
@@ -57,6 +62,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/bot/pause', [BotController::class, 'pause'])->name('bot.pause');
     Route::post('/bot/resume', [BotController::class, 'resume'])->name('bot.resume');
     Route::post('/bot/stop', [BotController::class, 'stop'])->name('bot.stop');
+    Route::post('/bot/remove', [BotController::class, 'remove'])->name('bot.remove');
     Route::post('/bot/panic', [BotController::class, 'panic'])->name('bot.panic');
     Route::post('/bot/telegram', [BotController::class, 'updateTelegram'])->name('bot.telegram');
 

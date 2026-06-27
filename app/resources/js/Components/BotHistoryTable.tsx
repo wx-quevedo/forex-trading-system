@@ -5,6 +5,7 @@ interface Props {
     trades: BotClosedTrade[];
     digits?: number;
     onSelect: (t: BotClosedTrade) => void;
+    strategyName?: (id?: number) => string;
 }
 
 const REASON_CLS: Record<string, string> = {
@@ -16,7 +17,7 @@ const REASON_CLS: Record<string, string> = {
 };
 
 /** Historial de trades del bot estilo MT5 (clic en fila → detalle visual). */
-export default function BotHistoryTable({ trades, digits = 5, onSelect }: Props) {
+export default function BotHistoryTable({ trades, digits = 5, onSelect, strategyName }: Props) {
     const px = (v: number | null | undefined) => (v == null ? '—' : Number(v).toFixed(digits));
 
     if (trades.length === 0) {
@@ -28,6 +29,7 @@ export default function BotHistoryTable({ trades, digits = 5, onSelect }: Props)
             <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-bg-surface">
                     <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
+                        {strategyName && <th className="px-3 py-2 font-medium">Estrategia</th>}
                         <th className="px-3 py-2 font-medium">Entrada</th>
                         <th className="px-3 py-2 font-medium">Salida</th>
                         <th className="px-3 py-2 font-medium">Par</th>
@@ -52,6 +54,7 @@ export default function BotHistoryTable({ trades, digits = 5, onSelect }: Props)
                                 onClick={() => onSelect(t)}
                                 className="cursor-pointer border-b border-border/40 last:border-0 hover:bg-bg-elevated"
                             >
+                                {strategyName && <td className="px-3 py-1.5 text-xs text-text-primary">{strategyName(t.strategy_id)}</td>}
                                 <td className="px-3 py-1.5 font-mono text-[11px] text-text-secondary">{t.open_at ? fmtTimeMs(t.open_at) : '—'}</td>
                                 <td className="px-3 py-1.5 font-mono text-[11px] text-text-secondary">{t.close_at ? fmtTimeMs(t.close_at) : '—'}</td>
                                 <td className="px-3 py-1.5 font-mono text-xs text-text-primary">{t.symbol}</td>

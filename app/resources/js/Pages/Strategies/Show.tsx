@@ -71,6 +71,12 @@ export default function Show({ strategy, versions, recentSignals }: Props) {
                 </div>
                 <div className="flex items-center gap-2">
                     <Link
+                        href={`/laboratory?strategy=${strategy.id}`}
+                        className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+                    >
+                        Abrir en laboratorio
+                    </Link>
+                    <Link
                         href={`/strategies/${strategy.id}/edit`}
                         className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
                     >

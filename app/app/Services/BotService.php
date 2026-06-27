@@ -12,9 +12,9 @@ use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
- * Sincroniza el estado del bot (del bridge) con la BD de Laravel y dispara
- * notificaciones Telegram de eventos autónomos (trades, límite diario, error).
- * El panel de control llama a syncAndStatus() periódicamente (polling).
+ * Sincroniza el estado MULTI-ESTRATEGIA del bot (del bridge) con la BD de Laravel,
+ * con trazabilidad por estrategia (strategy_id/magic en cada trade) y dispara
+ * notificaciones Telegram + eventos del Journal. El panel llama syncAndStatus() en polling.
  */
 class BotService
 {
@@ -23,30 +23,25 @@ class BotService
         private readonly TelegramNotifier $telegram,
     ) {}
 
-    /** Estado del bot (sin sincronizar) — tolerante a bridge caído. */
     public function status(): array
     {
         try {
             return $this->bridge->botStatus();
         } catch (Throwable $e) {
-            return ['status' => 'error', 'error' => 'Bridge no accesible: ' . $e->getMessage(), 'positions' => [], 'signals' => [], 'closed_trades' => []];
+            return ['status' => 'error', 'error' => 'Bridge no accesible: ' . $e->getMessage(), 'runs' => [], 'positions' => [], 'signals' => [], 'closed_trades' => [], 'exposure' => []];
         }
     }
 
-    /** Obtiene el estado, lo persiste en la BD, notifica eventos y lo emite por Reverb. */
     public function syncAndStatus(): array
     {
         $status = $this->status();
-        $runId = $status['bot_run_id'] ?? null;
-
-        if ($runId && ($run = BotRun::find($runId))) {
+        if (! empty($status['runs'])) {
             try {
-                $this->sync($run, $status);
+                $this->sync($status);
             } catch (Throwable) {
                 // la persistencia no debe romper el estado en vivo
             }
         }
-
         try {
             BotUpdated::dispatch($status);
         } catch (Throwable) {
@@ -55,61 +50,93 @@ class BotService
         return $status;
     }
 
-    private function sync(BotRun $run, array $status): void
+    private function sync(array $status): void
     {
-        $strategyId = $run->strategy_id;
+        // strategy_id -> resumen del run (incluye bot_run_id de Laravel).
+        $runByStrategy = [];
+        foreach ($status['runs'] as $r) {
+            $runByStrategy[(int) $r['strategy_id']] = $r;
+        }
 
-        // --- Señales nuevas (por seq) → signal_logs ---
-        $seqKey = "forexbot.bot_seq.{$run->id}";
-        $lastSeq = (int) Cache::get($seqKey, 0);
-        $maxSeq = $lastSeq;
-        foreach (array_reverse($status['signals'] ?? []) as $sig) { // de más antigua a más nueva
-            $seq = (int) ($sig['seq'] ?? 0);
-            if ($seq <= $lastSeq) {
-                continue;
+        $this->syncSignals($status['signals'] ?? []);
+        $this->syncOpenPositions($status['positions'] ?? [], $runByStrategy);
+        $this->syncClosedTrades($status['closed_trades'] ?? [], $runByStrategy);
+        $this->updateRuns($runByStrategy);
+        $this->journalHedge($status['exposure'] ?? [], $status['positions'] ?? []);
+    }
+
+    /** Señales nuevas por estrategia (seq monotónico por estrategia) → signal_logs. */
+    private function syncSignals(array $signals): void
+    {
+        $bySid = [];
+        foreach ($signals as $s) {
+            $sid = (int) ($s['strategy_id'] ?? 0);
+            if ($sid) {
+                $bySid[$sid][] = $s;
             }
-            SignalLog::create([
-                'strategy_id' => $strategyId,
-                'evaluated_at' => $sig['evaluated_at'] ?? now(),
-                'symbol' => $sig['symbol'] ?? $run->strategy->pair ?? '',
-                'signal_type' => $sig['signal_type'] ?? 'none',
-                'executed' => (bool) ($sig['executed'] ?? false),
-                'reason' => $sig['reason'] ?? null,
-                'indicator_values' => $sig['indicator_values'] ?? [],
-            ]);
-            $maxSeq = max($maxSeq, $seq);
         }
-        if ($maxSeq > $lastSeq) {
-            Cache::forever($seqKey, $maxSeq);
+        foreach ($bySid as $sid => $list) {
+            usort($list, fn ($a, $b) => ($a['seq'] ?? 0) <=> ($b['seq'] ?? 0));
+            $key = "forexbot.bot_seq.{$sid}";
+            $lastSeq = (int) Cache::get($key, 0);
+            $maxSeq = $lastSeq;
+            foreach ($list as $sig) {
+                $seq = (int) ($sig['seq'] ?? 0);
+                if ($seq <= $lastSeq) {
+                    continue;
+                }
+                SignalLog::create([
+                    'strategy_id' => $sid,
+                    'evaluated_at' => $sig['evaluated_at'] ?? now(),
+                    'symbol' => $sig['symbol'] ?? '',
+                    'signal_type' => $sig['signal_type'] ?? 'none',
+                    'executed' => (bool) ($sig['executed'] ?? false),
+                    'reason' => $sig['reason'] ?? null,
+                    'indicator_values' => $sig['indicator_values'] ?? [],
+                ]);
+                $maxSeq = max($maxSeq, $seq);
+            }
+            if ($maxSeq > $lastSeq) {
+                Cache::forever($key, $maxSeq);
+            }
         }
+    }
 
-        // --- Posiciones abiertas: detectar nuevas → Telegram trade_opened ---
-        $seenOpenKey = "forexbot.bot_open.{$run->id}";
-        $seenOpen = (array) Cache::get($seenOpenKey, []);
-        $currentOpen = [];
-        foreach ($status['positions'] ?? [] as $p) {
+    /** Detecta posiciones recién abiertas → Telegram + Journal (con estrategia). */
+    private function syncOpenPositions(array $positions, array $runByStrategy): void
+    {
+        $seen = (array) Cache::get('forexbot.bot_open_seen', []);
+        $current = [];
+        foreach ($positions as $p) {
             $ticket = (int) ($p['ticket'] ?? 0);
-            $currentOpen[] = $ticket;
-            if ($ticket && ! in_array($ticket, $seenOpen, true)) {
+            $current[] = $ticket;
+            if ($ticket && ! in_array($ticket, $seen, true)) {
+                $sid = (int) ($p['strategy_id'] ?? 0);
                 $dir = ($p['type'] ?? 0) === 0 ? 'BUY' : 'SELL';
-                $this->telegram->notify('trade_opened', "Trade abierto: {$dir} {$p['symbol']} {$p['volume']} lotes @ {$p['price_open']}");
-                $this->logEvent($run->id, 'trade_opened', 'info', "Trade abierto {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}");
+                $this->telegram->notify('trade_opened', "Trade abierto: {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}");
+                $this->logEvent($runByStrategy[$sid]['bot_run_id'] ?? null, 'trade_opened', 'info', "Trade abierto {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}", $sid ?: null);
             }
         }
-        Cache::forever($seenOpenKey, $currentOpen);
+        Cache::forever('forexbot.bot_open_seen', $current);
+    }
 
-        // --- Trades cerrados → tabla trades (upsert por ticket) + Telegram ---
-        $seenClosedKey = "forexbot.bot_closed.{$run->id}";
-        $seenClosed = (array) Cache::get($seenClosedKey, []);
-        foreach ($status['closed_trades'] ?? [] as $t) {
+    /** Trades cerrados → tabla trades con strategy_id/magic + Telegram/Journal. */
+    private function syncClosedTrades(array $trades, array $runByStrategy): void
+    {
+        $seen = (array) Cache::get('forexbot.bot_closed_seen', []);
+        foreach ($trades as $t) {
             $ticket = (int) ($t['ticket'] ?? 0);
             if (! $ticket) {
                 continue;
             }
+            $sid = (int) ($t['strategy_id'] ?? 0) ?: null;
+            $botRunId = $sid ? ($runByStrategy[$sid]['bot_run_id'] ?? null) : null;
             Trade::updateOrCreate(
                 ['ticket' => $ticket],
                 [
-                    'bot_run_id' => $run->id,
+                    'bot_run_id' => $botRunId,
+                    'strategy_id' => $sid,
+                    'magic' => $t['magic'] ?? null,
                     'symbol' => $t['symbol'] ?? '',
                     'direction' => $t['direction'] ?? '',
                     'open_price' => $t['open_price'] ?? null,
@@ -124,60 +151,83 @@ class BotService
                     'signal_data' => ['open_reason' => $t['open_reason'] ?? null, 'open_indicators' => $t['open_indicators'] ?? null],
                 ],
             );
-            if (! in_array($ticket, $seenClosed, true)) {
-                $seenClosed[] = $ticket;
+            if (! in_array($ticket, $seen, true)) {
+                $seen[] = $ticket;
                 $pnl = (float) ($t['pnl'] ?? 0);
                 $reason = $t['close_reason'] ?? 'cierre';
                 $this->telegram->notify('trade_closed', "Trade cerrado: {$t['symbol']} PnL " . number_format($pnl, 2) . " ({$reason})");
-                $this->logEvent($run->id, 'trade_closed', $pnl >= 0 ? 'info' : 'warning', "Trade cerrado {$t['symbol']} · PnL " . number_format($pnl, 2) . " · {$reason}");
+                $this->logEvent($botRunId, 'trade_closed', $pnl >= 0 ? 'info' : 'warning', "Trade cerrado {$t['symbol']} · PnL " . number_format($pnl, 2) . " · {$reason}", $sid);
             }
         }
-        Cache::forever($seenClosedKey, $seenClosed);
+        Cache::forever('forexbot.bot_closed_seen', $seen);
+    }
 
-        // --- Actualizar BotRun ---
-        $run->total_trades = count($seenClosed);
-        $run->total_pnl = (float) ($status['realized_pnl_today'] ?? 0);
-        $botStatus = $status['status'] ?? 'running';
-        if (in_array($botStatus, ['stopped', 'error'], true) && $run->status !== $botStatus) {
-            $run->status = $botStatus;
-            $run->stopped_at = now();
-        } elseif (in_array($botStatus, ['running', 'paused'], true)) {
-            $run->status = $botStatus;
-        }
-        $run->save();
-
-        // --- Eventos autónomos: límite diario / error (por cambio de estado) ---
-        $lastStatusKey = "forexbot.bot_laststatus.{$run->id}";
-        $prevStatus = Cache::get($lastStatusKey);
-        if ($botStatus !== $prevStatus) {
-            $reason = $status['stop_reason'] ?? '';
-            if ($botStatus === 'stopped' && str_contains($reason, 'pérdida diaria')) {
-                $this->telegram->notify('daily_limit', "Bot auto-detenido: {$reason}");
-                $this->logEvent($run->id, 'daily_limit', 'warning', "Auto-stop: {$reason}");
-            } elseif ($botStatus === 'error') {
-                $msg = 'Error crítico del bot: ' . ($status['error'] ?? 'desconocido');
-                $this->telegram->notify('error', $msg);
-                $this->logEvent($run->id, 'error', 'error', $msg);
-            } elseif ($botStatus === 'stopped') {
-                $this->logEvent($run->id, 'stopped', 'info', $reason ?: 'Bot detenido.');
+    /** Actualiza cada BotRun (pnl, nº trades, estado) y registra auto-stop/error. */
+    private function updateRuns(array $runByStrategy): void
+    {
+        foreach ($runByStrategy as $sid => $r) {
+            $botRunId = $r['bot_run_id'] ?? null;
+            if (! $botRunId || ! ($run = BotRun::find($botRunId))) {
+                continue;
             }
-            Cache::forever($lastStatusKey, $botStatus);
+            $run->total_pnl = (float) ($r['realized_pnl_today'] ?? 0);
+            $run->total_trades = Trade::where('bot_run_id', $botRunId)->count();
+            $botStatus = $r['status'] ?? 'running';
+            if (in_array($botStatus, ['stopped', 'error'], true) && $run->status !== $botStatus) {
+                $run->status = $botStatus;
+                $run->stopped_at = now();
+            } elseif (in_array($botStatus, ['running', 'paused'], true)) {
+                $run->status = $botStatus;
+            }
+            $run->save();
+
+            // Eventos autónomos por cambio de estado de la estrategia.
+            $key = "forexbot.bot_laststatus.{$botRunId}";
+            if ($botStatus !== Cache::get($key)) {
+                $reason = $r['stop_reason'] ?? '';
+                if ($botStatus === 'stopped' && str_contains($reason, 'pérdida diaria')) {
+                    $this->telegram->notify('daily_limit', "Estrategia auto-detenida: {$reason}");
+                    $this->logEvent($botRunId, 'daily_limit', 'warning', "Auto-stop: {$reason}", (int) $sid);
+                } elseif ($botStatus === 'error') {
+                    $msg = 'Error crítico: ' . ($r['error'] ?? 'desconocido');
+                    $this->telegram->notify('error', $msg);
+                    $this->logEvent($botRunId, 'error', 'error', $msg, (int) $sid);
+                }
+                Cache::forever($key, $botStatus);
+            }
         }
     }
 
-    /** Registra un evento del Journal del bot (idempotencia básica por mensaje+minuto). */
-    public function logEvent(?int $runId, string $type, string $severity, string $message): void
+    /** Registra (informativo) cuando dos estrategias quedan opuestas en el mismo par. */
+    private function journalHedge(array $exposure, array $positions): void
+    {
+        foreach ($exposure as $symbol => $ex) {
+            if (($ex['buy'] ?? 0) > 0 && ($ex['sell'] ?? 0) > 0) {
+                $sids = collect($positions)->where('symbol', $symbol)->pluck('strategy_id')->unique()->values()->all();
+                if (count($sids) < 2) {
+                    continue; // mismo sentido/estrategia, no es hedge entre estrategias
+                }
+                $key = 'forexbot.bot_hedge.' . $symbol;
+                if (! Cache::get($key)) {
+                    $this->logEvent(null, 'hedge', 'info', "Exposición opuesta en {$symbol}: BUY {$ex['buy']} / SELL {$ex['sell']} (estrategias distintas).");
+                    Cache::put($key, true, now()->addMinutes(30));
+                }
+            }
+        }
+    }
+
+    public function logEvent(?int $runId, string $type, string $severity, string $message, ?int $strategyId = null): void
     {
         try {
             BotEvent::create([
                 'bot_run_id' => $runId,
+                'strategy_id' => $strategyId,
                 'type' => $type,
                 'severity' => $severity,
                 'message' => $message,
                 'occurred_at' => now(),
             ]);
         } catch (Throwable) {
-            // el journal no debe romper el flujo
         }
     }
 }

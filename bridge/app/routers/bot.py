@@ -1,4 +1,4 @@
-"""Endpoints de control del bot en vivo (Fase 7)."""
+"""Endpoints de control del bot en vivo MULTI-ESTRATEGIA (Fase 7 / 8D)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 class StartRequest(BaseModel):
+    strategy_id: int
     bot_run_id: int | None = None
     strategy_type: str = Field(..., examples=["ma_cross"])
     params: dict[str, Any] = Field(default_factory=dict)
@@ -26,36 +27,48 @@ class StartRequest(BaseModel):
     max_positions: int = Field(default=1, ge=1, le=20)
 
 
-@router.post("/bot/start", summary="Arranca el bot con una estrategia y límites")
+class TargetRequest(BaseModel):
+    """Acción dirigida a una estrategia (strategy_id) o a todas si es None."""
+    strategy_id: int | None = None
+
+
+@router.post("/bot/start", summary="Añade una estrategia a la ejecución (multi-estrategia)")
 async def bot_start(req: StartRequest):
-    bot_runner.start(req.model_dump())
+    bot_runner.add(req.model_dump())
     return bot_runner.status()
 
 
-@router.post("/bot/pause", summary="Pausa la evaluación (mantiene posiciones)")
-async def bot_pause():
-    bot_runner.pause()
+@router.post("/bot/pause", summary="Pausa una estrategia (o todas)")
+async def bot_pause(req: TargetRequest = TargetRequest()):
+    bot_runner.pause(req.strategy_id)
     return bot_runner.status()
 
 
-@router.post("/bot/resume", summary="Reanuda la evaluación")
-async def bot_resume():
-    bot_runner.resume()
+@router.post("/bot/resume", summary="Reanuda una estrategia (o todas)")
+async def bot_resume(req: TargetRequest = TargetRequest()):
+    bot_runner.resume(req.strategy_id)
     return bot_runner.status()
 
 
-@router.post("/bot/stop", summary="Detiene el bot (deja de evaluar)")
-async def bot_stop():
-    bot_runner.stop()
+@router.post("/bot/stop", summary="Detiene una estrategia (o todas)")
+async def bot_stop(req: TargetRequest = TargetRequest()):
+    bot_runner.stop(req.strategy_id)
     return bot_runner.status()
 
 
-@router.post("/bot/panic", summary="PANIC: cierra TODAS las posiciones y detiene el bot")
+@router.post("/bot/remove", summary="Quita una estrategia de la lista del bot")
+async def bot_remove(req: TargetRequest):
+    if req.strategy_id is not None:
+        bot_runner.remove(req.strategy_id)
+    return bot_runner.status()
+
+
+@router.post("/bot/panic", summary="PANIC: cierra TODAS las posiciones y detiene todo")
 async def bot_panic():
     result = bot_runner.panic()
     return {"panic": result, "status": bot_runner.status()}
 
 
-@router.get("/bot/status", summary="Estado del bot + posiciones + PnL del día")
+@router.get("/bot/status", summary="Estado agregado + por estrategia")
 async def bot_status():
     return bot_runner.status()

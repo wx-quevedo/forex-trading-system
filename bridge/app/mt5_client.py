@@ -198,16 +198,18 @@ class MT5Client:
         }
 
     def _ensure_symbol(self, symbol: str) -> None:
+        # Activar SIEMPRE primero: un símbolo oculto que MT5 nunca seleccionó puede
+        # devolver symbol_info=None hasta hacer symbol_select (causa de "símbolo
+        # desconocido" en cripto/ocultos como BTCUSD#).
+        mt5.symbol_select(symbol, True)
         info = mt5.symbol_info(symbol)
         if info is None:
             raise MT5Error(f"Símbolo desconocido: '{symbol}'.", code=404, mt5_error=mt5.last_error())
-        if not info.visible:
-            # Algunos símbolos requieren ser seleccionados en Market Watch.
-            if not mt5.symbol_select(symbol, True):
-                raise MT5Error(
-                    f"No se pudo seleccionar el símbolo '{symbol}' en Market Watch.",
-                    mt5_error=mt5.last_error(),
-                )
+        if not info.visible and not mt5.symbol_select(symbol, True):
+            raise MT5Error(
+                f"No se pudo seleccionar el símbolo '{symbol}' en Market Watch.",
+                mt5_error=mt5.last_error(),
+            )
 
     def resolve_tradable_symbol(self, base: str) -> str:
         """Resuelve el símbolo OPERABLE real del broker para un símbolo base.
@@ -281,23 +283,33 @@ class MT5Client:
         date_to: datetime | None = None,
         count: int | None = None,
     ) -> list[dict[str, Any]]:
+        import time as _time
+
         self.ensure_connected()
         self._ensure_symbol(symbol)
         tf = resolve_timeframe(timeframe)
+        pos_to = date_to or datetime.now(tz=timezone.utc)
 
-        if count is not None and date_from is None:
-            # Últimas N velas hasta date_to (o ahora).
-            pos_to = date_to or datetime.now(tz=timezone.utc)
-            rates = mt5.copy_rates_from(symbol, tf, pos_to, count)
-        else:
+        def _fetch():
+            if count is not None and date_from is None:
+                return mt5.copy_rates_from(symbol, tf, pos_to, count)
             if date_from is None:
                 raise MT5Error("Debe indicarse 'from' (o 'count') para obtener velas.", code=400)
-            pos_to = date_to or datetime.now(tz=timezone.utc)
-            rates = mt5.copy_rates_range(symbol, tf, date_from, pos_to)
+            return mt5.copy_rates_range(symbol, tf, date_from, pos_to)
 
-        if rates is None:
+        # Símbolos ocultos (cripto/poco usados) pueden no tener histórico precargado:
+        # tras seleccionarlos, MT5 lo descarga del servidor. Reintentar brevemente.
+        rates = _fetch()
+        for _ in range(3):
+            if rates is not None and len(rates) > 0:
+                break
+            _time.sleep(0.6)
+            rates = _fetch()
+
+        if rates is None or len(rates) == 0:
             raise MT5Error(
-                f"No se pudieron obtener velas de '{symbol}'.",
+                f"MT5 no tiene histórico disponible para '{symbol}' en {timeframe}. "
+                "Puede tardar en descargarse; reintenta en unos segundos o elige otro periodo/símbolo.",
                 code=409,
                 mt5_error=mt5.last_error(),
             )

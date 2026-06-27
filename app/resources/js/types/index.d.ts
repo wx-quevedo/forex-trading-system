@@ -238,10 +238,13 @@ export interface BotPosition {
     tp: number;
     profit: number;
     time?: number; // epoch (s) de apertura
+    magic?: number;
+    strategy_id?: number;
 }
 
 export interface BotSignal {
     seq: number;
+    strategy_id?: number;
     evaluated_at: string;
     candle_time?: number | null;
     symbol: string;
@@ -253,6 +256,8 @@ export interface BotSignal {
 
 export interface BotClosedTrade {
     ticket: number;
+    strategy_id?: number;
+    magic?: number;
     symbol: string;
     direction: string | null;
     volume: number | null;
@@ -270,22 +275,41 @@ export interface BotClosedTrade {
     signal_data?: { open_reason?: string | null; open_indicators?: Record<string, number | null> | null } | null;
 }
 
-export interface BotStatus {
+export interface BotRunSummary {
+    strategy_id: number;
+    bot_run_id: number | null;
     status: 'stopped' | 'running' | 'paused' | 'error';
     error: string | null;
     stop_reason: string | null;
-    bot_run_id: number | null;
-    strategy?: { type: string; params: Record<string, unknown>; symbol: string; timeframe: string };
-    config?: { lot: number; sl_pips: number; tp_pips: number; daily_loss_limit: number; max_positions: number };
+    started_at: string | null;
+    magic: number;
+    strategy: { type: string; params: Record<string, unknown>; symbol: string; timeframe: string };
+    config: { lot: number; sl_pips: number; tp_pips: number; daily_loss_limit: number; max_positions: number };
+    realized_pnl_today: number;
+    floating_pnl: number;
+    daily_pnl: number;
+    open_positions: number;
+}
+
+export interface BotExposure {
+    buy: number;
+    sell: number;
+    count: number;
+}
+
+export interface BotStatus {
+    status: 'stopped' | 'running' | 'paused' | 'error';
+    error?: string | null;
     day?: string;
-    started_at?: string | null;
+    runs: BotRunSummary[];
+    positions: BotPosition[];
+    signals: BotSignal[];
+    closed_trades: BotClosedTrade[];
     realized_pnl_today?: number;
     floating_pnl?: number;
     daily_pnl?: number;
-    positions: BotPosition[];
-    open_positions?: number;
-    signals: BotSignal[];
-    closed_trades: BotClosedTrade[];
+    exposure?: Record<string, BotExposure>;
+    journal?: BotEvent[];
 }
 
 export interface TelegramSettings {
@@ -324,6 +348,8 @@ export interface Optimization {
 // --- Journal del bot (Fase 8D) ---
 export interface BotEvent {
     id: number;
+    bot_run_id?: number | null;
+    strategy_id?: number;
     type: string;
     severity: 'info' | 'warning' | 'error';
     message: string;
