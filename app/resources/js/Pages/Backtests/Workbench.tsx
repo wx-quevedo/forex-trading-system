@@ -8,9 +8,10 @@ import RunComparison from '@/Components/RunComparison';
 import TradesTable from '@/Components/TradesTable';
 import BacktestChart from '@/Components/BacktestChart';
 import OptimizationPanel from '@/Components/OptimizationPanel';
+import ProgressModal from '@/Components/ProgressModal';
 import { fmtMoney } from '@/lib/format';
 import type {
-    AiAnalysis, Backtest, Candle, SchemaField, Strategy, StrategySchemas, WorkbenchRun,
+    AiAnalysis, Backtest, Candle, Optimization, SchemaField, Strategy, StrategySchemas, WorkbenchRun,
 } from '@/types';
 
 interface Props {
@@ -56,8 +57,26 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
     const [highlight, setHighlight] = useState<Set<string>>(new Set());
     const [persistRun, setPersistRun] = useState(true);
     const [overlay, setOverlay] = useState(false);
+    const [optData, setOptData] = useState<Optimization | null>(null);
+    const [optimizing, setOptimizing] = useState(false);
 
     const hl = (key: string) => (highlight.has(key) ? 'param-highlight' : '');
+
+    const runOptimize = async () => {
+        setOptimizing(true);
+        try {
+            const { data } = await window.axios.post('/backtests/optimize', {
+                strategy_type: type, pair: strategy.pair, timeframe: strategy.timeframe,
+                date_from: period.date_from, date_to: period.date_to, indicators, risk,
+            });
+            setOptData(data as Optimization);
+        } catch (e: unknown) {
+            const err = e as { response?: { data?: { error?: string } } };
+            setRunError(err.response?.data?.error ?? 'No se pudo optimizar.');
+        } finally {
+            setOptimizing(false);
+        }
+    };
 
     const rerun = async () => {
         setRunning(true);
@@ -267,17 +286,17 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
             </div>
 
             {/* Optimización automática robusta */}
-            <div className="mt-8">
-                <OptimizationPanel
-                    strategyType={type}
-                    pair={strategy.pair}
-                    timeframe={strategy.timeframe}
-                    period={period}
-                    indicators={indicators}
-                    risk={risk}
-                    onLoad={(params) => applyToPanel(params, risk)}
-                />
+            <div className="mt-8 rounded-lg border border-border bg-bg-surface p-4">
+                <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-sm font-semibold">Optimización automática (robusta, anti-overfitting)</h2>
+                    <button type="button" onClick={runOptimize} disabled={optimizing} className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
+                        {optimizing ? 'Optimizando…' : 'Optimizar'}
+                    </button>
+                </div>
+                <OptimizationPanel data={optData} onLoad={(params) => applyToPanel(params, risk)} />
             </div>
+
+            {optimizing && <ProgressModal title="Optimizando…" detail="Barriendo combinaciones y validando out-of-sample (puede tardar)." />}
 
             {/* Panel inferior: afinamiento IA */}
             <div className="mt-8">

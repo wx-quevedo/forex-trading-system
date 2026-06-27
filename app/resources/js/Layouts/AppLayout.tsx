@@ -11,7 +11,7 @@ const NAV = [
     { href: '/bot', label: 'Bot' },
 ];
 
-export default function AppLayout({ children, title, wide }: PropsWithChildren<{ title?: string; wide?: boolean }>) {
+export default function AppLayout({ children, title, wide, fullHeight }: PropsWithChildren<{ title?: string; wide?: boolean; fullHeight?: boolean }>) {
     const { props, url } = usePage<SharedProps>();
     const user = props.auth.user;
 
@@ -41,8 +41,8 @@ export default function AppLayout({ children, title, wide }: PropsWithChildren<{
     }, []);
 
     return (
-        <div className="min-h-screen bg-bg-primary text-text-primary">
-            <header className="sticky top-0 z-10 border-b border-border bg-bg-surface/80 backdrop-blur">
+        <div className={`bg-bg-primary text-text-primary ${fullHeight ? 'flex h-screen flex-col overflow-hidden' : 'min-h-screen'}`}>
+            <header className={`z-10 border-b border-border bg-bg-surface/80 backdrop-blur ${fullHeight ? 'shrink-0' : 'sticky top-0'}`}>
                 <div className="mx-auto flex max-w-[1600px] items-center justify-between px-6 py-3">
                     <div className="flex items-center gap-8">
                         <div className="flex items-center gap-2">
@@ -89,10 +89,14 @@ export default function AppLayout({ children, title, wide }: PropsWithChildren<{
                 </div>
             </header>
 
-            <main className={`mx-auto px-6 py-6 ${wide ? 'max-w-none' : 'max-w-[1600px]'}`}>
-                {title && <h1 className="mb-5 text-lg font-semibold tracking-tight">{title}</h1>}
-                {children}
-            </main>
+            {fullHeight ? (
+                <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+            ) : (
+                <main className={`mx-auto px-6 py-6 ${wide ? 'max-w-none' : 'max-w-[1600px]'}`}>
+                    {title && <h1 className="mb-5 text-lg font-semibold tracking-tight">{title}</h1>}
+                    {children}
+                </main>
+            )}
         </div>
     );
 }

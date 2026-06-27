@@ -10,7 +10,7 @@ import InfoTooltip from '@/Components/InfoTooltip';
 import ProgressModal from '@/Components/ProgressModal';
 import { PARAM_HELP } from '@/lib/paramHelp';
 import { fmtMoney, fmtNumber } from '@/lib/format';
-import type { BacktestMetrics, BacktestTrade, Candle, EquityPoint, SchemaField, StrategySchemas } from '@/types';
+import type { BacktestMetrics, BacktestTrade, Candle, EquityPoint, Optimization, SchemaField, StrategySchemas } from '@/types';
 
 interface Preload {
     from_strategy_id: number;
@@ -89,6 +89,8 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
 
     const [tab, setTab] = useState<Tab>(() => (localStorage.getItem('forexbot.lab_tab') === 'optimize' ? 'optimize' : 'trades'));
     const setTabPref = (t: Tab) => { setTab(t); localStorage.setItem('forexbot.lab_tab', t); };
+    const [optData, setOptData] = useState<Optimization | null>(null);
+    const [optimizing, setOptimizing] = useState(false);
 
     const [showSave, setShowSave] = useState(false);
     const [name, setName] = useState(preload?.name ?? '');
@@ -133,6 +135,21 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         }
     };
 
+    const runOptimize = async () => {
+        setOptimizing(true);
+        setError(null);
+        setTabPref('optimize');
+        try {
+            const { data } = await window.axios.post('/backtests/optimize', { strategy_type: type, pair, timeframe, date_from: period.date_from, date_to: period.date_to, indicators, risk, initial_balance: capital });
+            setOptData(data as Optimization);
+        } catch (e: unknown) {
+            const err = e as { response?: { data?: { error?: string } } };
+            setError(err.response?.data?.error ?? 'No se pudo optimizar.');
+        } finally {
+            setOptimizing(false);
+        }
+    };
+
     const loadCombo = (params: Record<string, number | string>) => {
         setIndicators((prev) => ({ ...prev, ...params }));
         setHighlight(new Set(Object.keys(params)));
@@ -148,16 +165,21 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         types, type, changeType, schemas, pair, setPair, symbols, timeframe, setTimeframe, timeframes,
         fields, indicators, setIndicator, highlight, risk, setRiskField, period, setPeriod, capital, setCapital: setCapitalPref,
         running, runBacktest, openSave: () => setShowSave(true), run, candles, digits, loadCombo,
-        tab, setTab: setTabPref, error,
+        tab, setTab: setTabPref, error, optData, optimizing, runOptimize,
     };
 
     return (
-        <AppLayout title={preload ? `Laboratorio · ${preload.name}` : 'Laboratorio de estrategias'} wide>
+        <AppLayout title="Laboratorio" fullHeight>
             <Head title="Laboratorio" />
 
             <LayoutSidebar lab={lab} />
 
-            {running && <ProgressModal title="Ejecutando backtest…" detail={`${type} · ${pair} · ${timeframe}`} />}
+            {(running || optimizing) && (
+                <ProgressModal
+                    title={optimizing ? 'Optimizando…' : 'Ejecutando backtest…'}
+                    detail={optimizing ? 'Barriendo combinaciones y validando out-of-sample (puede tardar).' : `${type} · ${pair} · ${timeframe}`}
+                />
+            )}
 
             {showSave && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setShowSave(false)}>
@@ -185,26 +207,30 @@ interface LabProps {
     capital: number; setCapital: (v: number) => void;
     running: boolean; runBacktest: () => void; openSave: () => void; run: Run | null; candles: Candle[]; digits: number; loadCombo: (p: Record<string, number | string>) => void;
     tab: Tab; setTab: (t: Tab) => void; error: string | null;
+    optData: Optimization | null; optimizing: boolean; runOptimize: () => void;
 }
 
-// ---------- Disposición Sidebar (definitiva) ----------
+// ---------- Layout dashboard: dos zonas de scroll (sidebar + content) ----------
 function LayoutSidebar({ lab }: { lab: LabProps }) {
     return (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">
-            {/* Sidebar fijo con su propio scroll, independiente de la derecha. */}
-            <aside className="lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:self-start lg:overflow-y-auto lg:pr-1">
-                <section className="rounded-lg border border-border bg-bg-surface p-4">
-                    <ConfigControls lab={lab} />
-                </section>
+        <div className="flex h-full">
+            {/* Sidebar: columna de alto completo con su PROPIO scroll. */}
+            <aside className="w-80 shrink-0 overflow-y-auto border-r border-border bg-bg-surface p-4">
+                <ConfigControls lab={lab} />
             </aside>
-            <div className="min-w-0 space-y-4">
-                <MetricsStrip metrics={lab.run?.metrics ?? null} capital={lab.capital} />
-                {/* Precio (protagonista) + curva de equity lado a lado. */}
-                <div className="grid grid-cols-1 gap-4 xl:grid-cols-[3fr_2fr]">
-                    <ChartPanel lab={lab} height={440} />
-                    <EquityPanel equity={lab.run?.equity ?? []} height={440} />
+            {/* Content: métricas fijas arriba + zona de scroll propia debajo. */}
+            <div className="flex min-w-0 flex-1 flex-col">
+                <div className="shrink-0 border-b border-border p-3">
+                    <MetricsStrip metrics={lab.run?.metrics ?? null} capital={lab.capital} />
                 </div>
-                <ResultsTabs lab={lab} />
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+                    {/* Precio (protagonista) + curva de equity lado a lado. */}
+                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[3fr_2fr]">
+                        <ChartPanel lab={lab} height={440} />
+                        <EquityPanel equity={lab.run?.equity ?? []} height={440} />
+                    </div>
+                    <ResultsTabs lab={lab} />
+                </div>
             </div>
         </div>
     );
@@ -272,7 +298,7 @@ function Buttons({ lab }: { lab: LabProps }) {
                 {lab.running ? 'Corriendo…' : 'Ejecutar backtest'}
             </button>
             <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => lab.setTab('optimize')} className="rounded-md border border-border px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated">Optimizar</button>
+                <button type="button" onClick={lab.runOptimize} disabled={lab.optimizing || lab.running} className="rounded-md border border-border px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated disabled:opacity-50">{lab.optimizing ? 'Optimizando…' : 'Optimizar'}</button>
                 <button type="button" onClick={lab.openSave} className="rounded-md bg-profit px-3 py-2 text-sm font-bold text-white hover:opacity-90">Guardar</button>
             </div>
         </>
@@ -365,9 +391,7 @@ function ResultsTabs({ lab }: { lab: LabProps }) {
                         ? <TradesTable trades={lab.run.trades} chartContext={{ symbol: lab.pair, timeframe: lab.timeframe, digits: lab.digits, strategyType: lab.type, params: lab.indicators }} />
                         : <Placeholder />
                 )}
-                {lab.tab === 'optimize' && (
-                    <OptimizationPanel alwaysOpen strategyType={lab.type} pair={lab.pair} timeframe={lab.timeframe} period={lab.period} indicators={lab.indicators} risk={lab.risk} initialBalance={lab.capital} onLoad={lab.loadCombo} />
-                )}
+                {lab.tab === 'optimize' && <OptimizationPanel data={lab.optData} onLoad={lab.loadCombo} />}
             </div>
         </section>
     );
