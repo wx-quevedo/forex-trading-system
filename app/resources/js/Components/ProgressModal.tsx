@@ -30,7 +30,7 @@ export default function ProgressModal({
                     <span className="text-sm font-semibold text-text-primary">{title}</span>
                     {determinate && <span className="font-mono text-xs text-text-secondary">{pct}%</span>}
                 </div>
-                {detail && <div className="mb-3 break-words text-xs text-text-secondary">{detail}</div>}
+                {detail && <div className="mb-3 break-words whitespace-pre-line text-xs text-text-secondary">{detail}</div>}
 
                 <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-bg-elevated">
                     {determinate ? (

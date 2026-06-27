@@ -295,4 +295,10 @@ class PythonBridgeService
     {
         return $this->request('POST', '/explore/cancel');
     }
+
+    /** Carga del sistema y del proceso del bridge (CPU/RAM) vía psutil. */
+    public function systemStats(): array
+    {
+        return $this->request('GET', '/system/stats');
+    }
 }

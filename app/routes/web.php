@@ -35,6 +35,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/explorer/status', [ExplorerController::class, 'status'])->name('explorer.status');
     Route::get('/explorer/results', [ExplorerController::class, 'results'])->name('explorer.results');
     Route::post('/explorer/cancel', [ExplorerController::class, 'cancel'])->name('explorer.cancel');
+    Route::get('/explorer/system-stats', [ExplorerController::class, 'systemStats'])->name('explorer.system-stats');
 
     // --- Módulo de Estrategias ---
     Route::post('/strategies/{strategy}/version', [StrategyController::class, 'version'])->name('strategies.version');

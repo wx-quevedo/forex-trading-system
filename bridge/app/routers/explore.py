@@ -13,6 +13,8 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+import os
+
 from ..auth import require_api_key
 from ..explore import (
     MAX_CONFIGS,
@@ -20,6 +22,7 @@ from ..explore import (
     SL_CHOICES,
     SWEEP_TIMEFRAMES,
     TP_CHOICES,
+    default_workers,
     estimate_configs,
     grid_size,
     job,
@@ -41,6 +44,7 @@ class ExploreRequest(BaseModel):
     sl_choices: list[float] = Field(default_factory=lambda: list(SL_CHOICES), min_length=1)
     tp_choices: list[float] = Field(default_factory=lambda: list(TP_CHOICES), min_length=1)
     risk_choices: list[float] = Field(default_factory=lambda: list(RISK_CHOICES), min_length=1)
+    workers: int | None = Field(default=None, ge=1, le=64)
 
     model_config = {"populate_by_name": True}
 
@@ -63,6 +67,8 @@ async def explore_meta():
         "risk_choices": RISK_CHOICES,
         "sweep_timeframes": SWEEP_TIMEFRAMES,
         "max_configs": MAX_CONFIGS,
+        "cpu_count": os.cpu_count(),
+        "default_workers": default_workers(),
     }
 
 
@@ -101,6 +107,7 @@ async def explore_start(req: ExploreRequest):
         "sl_choices": req.sl_choices,
         "tp_choices": req.tp_choices,
         "risk_choices": req.risk_choices,
+        "workers": req.workers,
     }
     return job.start(payload, client)
 

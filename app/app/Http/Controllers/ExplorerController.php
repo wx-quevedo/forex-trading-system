@@ -76,6 +76,7 @@ class ExplorerController extends Controller
             'tp_choices.*' => ['numeric', 'min:0'],
             'risk_choices' => ['required', 'array', 'min:1'],
             'risk_choices.*' => ['numeric', 'min:0.1', 'max:100'],
+            'workers' => ['nullable', 'integer', 'min:1', 'max:64'],
         ]);
 
         $payload = [
@@ -88,9 +89,15 @@ class ExplorerController extends Controller
             'sl_choices' => array_map('floatval', $data['sl_choices']),
             'tp_choices' => array_map('floatval', $data['tp_choices']),
             'risk_choices' => array_map('floatval', $data['risk_choices']),
+            'workers' => isset($data['workers']) ? (int) $data['workers'] : null,
         ];
 
         return $this->proxy(fn () => $this->bridge->exploreStart($payload));
+    }
+
+    public function systemStats(): JsonResponse
+    {
+        return $this->proxy(fn () => $this->bridge->systemStats());
     }
 
     public function status(): JsonResponse

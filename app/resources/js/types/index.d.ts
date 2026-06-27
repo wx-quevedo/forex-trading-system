@@ -359,6 +359,21 @@ export interface ExploreMeta {
     risk_choices: number[];
     sweep_timeframes: string[];
     max_configs: number;
+    cpu_count: number;
+    default_workers: number;
+}
+
+export interface SystemStats {
+    cpu_count: number;
+    logical_cores: number;
+    physical_cores: number;
+    system_cpu_percent: number;
+    process_cpu_percent: number;
+    process_cpu_percent_norm: number;
+    ram_total_gb: number;
+    ram_used_gb: number;
+    ram_percent: number;
+    process_ram_mb: number;
 }
 
 export interface ExploreResultRow {
@@ -396,6 +411,16 @@ export interface ExploreStatus {
     started_at: string | null;
     finished_at: string | null;
     request: Record<string, unknown> | null;
+    // Velocidad / monitoreo.
+    workers: number;
+    elapsed_seconds: number;
+    speed_per_sec: number;
+    speed_per_min: number;
+    eta_seconds: number | null;
+    // Diagnóstico.
+    t_mt5_seconds: number;
+    t_compute_seconds: number;
+    candle_fetches: number;
     results?: ExploreResultRow[];
 }
 

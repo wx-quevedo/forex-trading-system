@@ -55,6 +55,8 @@ def _req(**over):
         "sl_choices": [20],
         "tp_choices": [40],
         "risk_choices": [1.0],
+        "workers": 1,
+        "inprocess": True,  # tests: cómputo en el hilo, sin spawnear procesos
     }
     base.update(over)
     return base
@@ -104,3 +106,61 @@ def test_skips_groups_with_insufficient_candles():
     assert snap["status"] == "done"
     assert snap["done"] == snap["total"]
     assert snap["results_count"] == 0
+
+
+def _row_key(r):
+    return (r["pair"], r["type"], r["timeframe"], r["sl_pips"], r["tp_pips"],
+            r["risk_percent"], tuple(sorted(r["params"].items())))
+
+
+def test_parallel_path_matches_sequential(monkeypatch):
+    """El camino paralelo (orquestación) produce EXACTAMENTE los mismos resultados
+    que el secuencial. Se inyecta un executor síncrono para no spawnear procesos
+    dentro de pytest (la lógica de agregado/progreso es la que se valida)."""
+    import app.explore.engine as eng
+
+    class _SyncFuture:
+        def __init__(self, fn, *a):
+            self._fn, self._a = fn, a
+        def result(self):
+            return self._fn(*self._a)
+
+    class _SyncExecutor:
+        def __init__(self, max_workers=None):
+            pass
+        def submit(self, fn, *a):
+            return _SyncFuture(fn, *a)
+        def shutdown(self, **k):
+            pass
+
+    candles = _wave_candles(440)
+    req = _req(sl_choices=[20, 30], tp_choices=[40, 60], risk_choices=[1.0])
+
+    seq = _run_job(ExploreJob(), {**req, "workers": 1, "inprocess": True}, FakeClient(candles))
+
+    # Camino paralelo (orquestación real) con executor síncrono inyectado.
+    monkeypatch.setattr(eng, "ProcessPoolExecutor", _SyncExecutor)
+    monkeypatch.setattr(eng, "as_completed", lambda fs: list(fs))
+    par = _run_job(ExploreJob(), {**req, "workers": 8, "inprocess": False}, FakeClient(candles))
+
+    assert par["status"] == "done"
+    assert par["done"] == seq["done"] == par["total"]
+    assert par["workers"] == 8
+    # Mismos resultados (orden puede variar → comparar como conjunto por clave de config).
+    seq_map = {_row_key(r): r for r in seq["results"]}
+    par_map = {_row_key(r): r for r in par["results"]}
+    assert seq_map.keys() == par_map.keys()
+    for k, r in seq_map.items():
+        assert r["return_pct"] == par_map[k]["return_pct"]
+        assert r["robustness"] == par_map[k]["robustness"]
+        assert r["verdict"] == par_map[k]["verdict"]
+
+
+def test_snapshot_reports_speed_and_workers():
+    client = FakeClient(_wave_candles(440))
+    snap = _run_job(ExploreJob(), _req(), client)
+    assert snap["workers"] == 1
+    assert snap["candle_fetches"] == 1
+    assert snap["elapsed_seconds"] >= 0
+    assert snap["t_compute_seconds"] >= 0
+    assert "speed_per_sec" in snap and "eta_seconds" in snap

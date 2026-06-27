@@ -3,8 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import AppLayout from '@/Layouts/AppLayout';
 import SymbolCombobox from '@/Components/SymbolCombobox';
 import ProgressModal from '@/Components/ProgressModal';
+import SystemStatsCard from '@/Components/SystemStatsCard';
 import { fmtMoney, fmtNumber } from '@/lib/format';
 import type { ExploreMeta, ExploreResultRow, ExploreStatus, StrategySchemas } from '@/types';
+
+const fmtEta = (s: number | null): string => {
+    if (s == null) return '—';
+    if (s < 60) return `${Math.round(s)}s`;
+    const m = Math.floor(s / 60);
+    return `${m}m ${Math.round(s % 60)}s`;
+};
 
 interface Props {
     schemas: StrategySchemas;
@@ -42,6 +50,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
     const [risks, setRisks] = useState<number[]>(meta.risk_choices);
     const [period, setPeriod] = useState(defaultPeriod);
     const [capital, setCapital] = useState<number>(() => Number(localStorage.getItem('forexbot.lab_capital')) || 10000);
+    const [workers, setWorkers] = useState<number>(meta.default_workers || 4);
 
     // --- Estado de la búsqueda ---
     const [status, setStatus] = useState<ExploreStatus | null>(null);
@@ -50,7 +59,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
     const pollRef = useRef<number | null>(null);
 
     // --- Reporte: filtros, orden, guardar ---
-    const [fVerdict, setFVerdict] = useState<'all' | 'inside' | 'edge' | 'outside'>('inside');
+    // Por defecto se ven TODAS las combinaciones probadas (incl. FUERA del rango),
+    // ordenadas por robustez. El filtro "solo DENTRO" es opcional, no el default.
+    const [fVerdict, setFVerdict] = useState<'all' | 'inside' | 'edge' | 'outside'>('all');
     const [fPair, setFPair] = useState('all');
     const [fType, setFType] = useState('all');
     const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'robustness', dir: 'desc' });
@@ -112,7 +123,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
             const { data } = await window.axios.post('/explorer/start', {
                 pairs, types: selTypes, timeframes: selTfs,
                 date_from: period.date_from, date_to: period.date_to, capital,
-                sl_choices: sls, tp_choices: tps, risk_choices: risks,
+                sl_choices: sls, tp_choices: tps, risk_choices: risks, workers,
             });
             setStatus(data as ExploreStatus);
             startPoll();
@@ -186,6 +197,8 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
                 <span className="font-semibold"> out-of-sample</span>, no del retorno más alto. El reporte ordena por robustez por defecto.
             </div>
 
+            <div className="mb-4"><SystemStatsCard /></div>
+
             {/* --- Configuración de la búsqueda --- */}
             <section className="space-y-4 rounded-lg border border-border bg-bg-surface p-4">
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -216,11 +229,12 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
                         <ChipToggle options={timeframes.map((t) => ({ value: t, label: t }))} selected={selTfs} onToggle={(v) => toggle(selTfs, setSelTfs, v as string)} />
                     </div>
 
-                    {/* Periodo + capital */}
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {/* Periodo + capital + workers */}
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                         <Field label="Desde"><input type="date" value={period.date_from} onChange={(e) => setPeriod((p) => ({ ...p, date_from: e.target.value }))} className="input font-mono" /></Field>
                         <Field label="Hasta"><input type="date" value={period.date_to} onChange={(e) => setPeriod((p) => ({ ...p, date_to: e.target.value }))} className="input font-mono" /></Field>
                         <Field label="Capital (USD)"><input type="number" min={1} step={100} value={capital} onChange={(e) => setCapital(Number(e.target.value))} className="input font-mono" /></Field>
+                        <Field label={`Núcleos (máx ${meta.cpu_count})`}><input type="number" min={1} max={meta.cpu_count} value={workers} onChange={(e) => setWorkers(Math.max(1, Math.min(meta.cpu_count, Number(e.target.value))))} className="input font-mono" /></Field>
                     </div>
                 </div>
 
@@ -251,9 +265,16 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
                 <section className="mt-5 rounded-lg border border-border bg-bg-surface">
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-3">
                         <div className="text-sm text-text-secondary">
-                            <span className="font-semibold text-text-primary">{results.length.toLocaleString()}</span> configuraciones probadas ·
-                            <span className="font-semibold text-profit"> {results.filter((r) => r.verdict === 'inside').length}</span> DENTRO del rango ·
-                            mostrando <span className="font-semibold text-text-primary">{view.length.toLocaleString()}</span>
+                            <div>
+                                <span className="font-semibold text-text-primary">{results.length.toLocaleString()}</span> configuraciones probadas ·
+                                <span className="font-semibold text-profit"> {results.filter((r) => r.verdict === 'inside').length}</span> DENTRO del rango ·
+                                mostrando <span className="font-semibold text-text-primary">{view.length.toLocaleString()}</span>
+                            </div>
+                            {status && status.elapsed_seconds > 0 && (
+                                <div className="mt-0.5 font-mono text-[11px]">
+                                    {status.elapsed_seconds}s · {status.speed_per_sec}/s · {status.workers} núcleos · MT5 {status.t_mt5_seconds}s vs cálculo {status.t_compute_seconds}s · {status.candle_fetches} descargas de velas
+                                </div>
+                            )}
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <FilterSelect label="Veredicto" value={fVerdict} onChange={(v) => setFVerdict(v as typeof fVerdict)} options={[['all', 'Todos'], ['inside', 'DENTRO'], ['edge', 'Límite'], ['outside', 'FUERA']]} />
@@ -262,6 +283,14 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
                             <button type="button" onClick={exportCsv} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated">Exportar CSV</button>
                         </div>
                     </div>
+
+                    {results.every((r) => r.verdict !== 'inside') && (
+                        <div className="border-b border-border bg-bg-elevated/50 px-3 py-2.5 text-xs text-text-secondary">
+                            Ninguna combinación resultó robusta (DENTRO del rango) en esta búsqueda. Se muestran todas las probadas, ordenadas por
+                            robustez. Esto suele significar que este par/timeframe/periodo no ofrece una ventaja estable con estos parámetros —
+                            prueba otro par, timeframe o tipo de estrategia.
+                        </div>
+                    )}
 
                     <div className="max-h-[60vh] overflow-auto">
                         <table className="w-full text-sm">
@@ -331,15 +360,15 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
 
             {status && status.status !== 'running' && results.length === 0 && status.total > 0 && (
                 <p className="mt-5 text-center text-sm text-text-secondary">
-                    {status.status === 'cancelled' ? 'Búsqueda cancelada.' : status.status === 'error' ? `Error: ${status.error}` : 'Ninguna configuración pasó el filtro.'}
+                    {status.status === 'cancelled' ? 'Búsqueda cancelada.' : status.status === 'error' ? `Error: ${status.error}` : 'No se evaluó ninguna combinación (¿velas insuficientes en el periodo? prueba un rango más amplio).'}
                 </p>
             )}
 
-            {/* Modal de progreso real, cancelable */}
+            {/* Modal de progreso real, cancelable, con velocidad y ETA */}
             {running && status && (
                 <ProgressModal
                     title="Buscando estrategias…"
-                    detail={status.current ?? 'Preparando…'}
+                    detail={`${status.current ?? 'Preparando…'}\n${status.workers} núcleos · ${status.speed_per_sec}/s (${status.speed_per_min}/min) · faltan ${fmtEta(status.eta_seconds)} · ${status.elapsed_seconds}s transcurridos`}
                     value={status.done}
                     max={status.total}
                     onCancel={cancel}
