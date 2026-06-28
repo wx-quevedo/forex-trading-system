@@ -7,9 +7,13 @@ const NAV = [
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/laboratory', label: 'Laboratorio' },
     { href: '/explorer', label: 'Explorador' },
+    { href: '/coverage', label: 'Mapa' },
+    { href: '/favorites', label: 'Favoritos' },
+    { href: '/bot-historico', label: 'Bot Histórico' },
     { href: '/strategies', label: 'Estrategias' },
     { href: '/backtests', label: 'Backtests' },
     { href: '/bot', label: 'Bot' },
+    { href: '/settings/analysis-context', label: 'Contexto' },
 ];
 
 export default function AppLayout({ children, title, wide, fullHeight }: PropsWithChildren<{ title?: string; wide?: boolean; fullHeight?: boolean }>) {

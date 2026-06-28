@@ -301,4 +301,10 @@ class PythonBridgeService
     {
         return $this->request('GET', '/system/stats');
     }
+
+    /** Mapa de cobertura jerárquico del Explorador (qué se ha explorado). */
+    public function exploreCoverage(array $query): array
+    {
+        return $this->request('GET', '/explore/coverage', ['query' => $query], timeout: 30);
+    }
 }

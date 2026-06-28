@@ -24,6 +24,7 @@ from ..explore import (
     SWEEP_TIMEFRAMES,
     TP_CHOICES,
     WARN_CONFIGS,
+    coverage_map,
     default_workers,
     estimate_configs,
     grid_size,
@@ -141,6 +142,19 @@ async def explore_reset():
     """Resetea el estado del Explorador a libre. Útil para destrabar un job huérfano
     tras una caída. Solo local (bridge atado a 127.0.0.1)."""
     return job.force_reset()
+
+
+@router.get("/explore/coverage", summary="Mapa de cobertura jerárquico (qué se ha explorado)")
+async def explore_coverage(
+    date_from: datetime,
+    date_to: datetime,
+    capital: float,
+    path: str = "",
+    pairs: str = "",
+):
+    parts = [p for p in path.split("/") if p]
+    pair_list = [p for p in pairs.split(",") if p]
+    return coverage_map(_default_cache, date_from, date_to, capital, parts, pair_list)
 
 
 @router.get("/explore/cache", summary="Tamaño/estado de la caché de resultados")

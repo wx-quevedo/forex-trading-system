@@ -4,10 +4,13 @@ use App\Http\Controllers\AiAnalysisController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\BotController;
+use App\Http\Controllers\BotHistoricoController;
+use App\Http\Controllers\FavoriteController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExplorerController;
 use App\Http\Controllers\LaboratoryController;
 use App\Http\Controllers\MarketController;
+use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\StrategyController;
 use App\Http\Controllers\WorkbenchController;
 use Illuminate\Support\Facades\Route;
@@ -36,6 +39,18 @@ Route::middleware('auth')->group(function () {
     Route::get('/explorer/results', [ExplorerController::class, 'results'])->name('explorer.results');
     Route::post('/explorer/cancel', [ExplorerController::class, 'cancel'])->name('explorer.cancel');
     Route::get('/explorer/system-stats', [ExplorerController::class, 'systemStats'])->name('explorer.system-stats');
+    Route::get('/explorer/coverage', [ExplorerController::class, 'coverage'])->name('explorer.coverage');
+    Route::get('/coverage', [ExplorerController::class, 'coverageMap'])->name('coverage');
+
+    // --- Favoritos + Bot Histórico (Fase 9) ---
+    Route::get('/favorites', [FavoriteController::class, 'index'])->name('favorites');
+    Route::post('/favorites', [FavoriteController::class, 'store'])->name('favorites.store');
+    Route::delete('/favorites/{favorite}', [FavoriteController::class, 'destroy'])->name('favorites.destroy');
+    Route::get('/bot-historico', [BotHistoricoController::class, 'show'])->name('bot-historico');
+
+    // --- Ajustes: contexto global de análisis (Desde/Hasta/Capital fijos) ---
+    Route::get('/settings/analysis-context', [SettingsController::class, 'analysisContext'])->name('settings.analysis-context');
+    Route::post('/settings/analysis-context', [SettingsController::class, 'updateAnalysisContext'])->name('settings.analysis-context.update');
     Route::post('/explorer/searches', [ExplorerController::class, 'saveSearch'])->name('explorer.searches.save');
     Route::get('/explorer/searches/{search}', [ExplorerController::class, 'showSearch'])->name('explorer.searches.show');
     Route::delete('/explorer/searches/{search}', [ExplorerController::class, 'deleteSearch'])->name('explorer.searches.delete');

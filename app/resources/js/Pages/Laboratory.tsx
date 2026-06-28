@@ -93,6 +93,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
     const [optimizing, setOptimizing] = useState(false);
 
     const [showSave, setShowSave] = useState(false);
+    const [favSaved, setFavSaved] = useState(false);
     const [name, setName] = useState(preload?.name ?? '');
     const [description, setDescription] = useState(preload?.description ?? '');
 
@@ -195,11 +196,33 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         router.post('/laboratory', { name, description, type, pair, timeframe, indicators, risk, from_strategy_id: preload?.from_strategy_id ?? null });
     };
 
+    const addFavorite = async () => {
+        const m = run?.metrics;
+        try {
+            await window.axios.post('/favorites', {
+                name: `${schemas[type]?.label ?? type} ${pair} ${timeframe}`,
+                source: 'lab',
+                pair, type, timeframe, params: indicators,
+                sl_pips: risk.sl_pips, tp_pips: risk.tp_pips, risk_percent: risk.risk_percent, capital,
+                backtest_from: period.date_from, backtest_to: period.date_to,
+                backtest_metrics: m ? {
+                    return_pct: m.return_pct, net_pnl: m.net_pnl, win_rate: m.win_rate,
+                    profit_factor: m.profit_factor, max_drawdown_pct: m.max_drawdown_pct,
+                    total_trades: m.total_trades, total_costs: m.total_costs, final_balance: m.final_balance,
+                } : null,
+            });
+            setFavSaved(true);
+            setTimeout(() => setFavSaved(false), 2000);
+        } catch {
+            setError('No se pudo añadir a favoritos.');
+        }
+    };
+
     const lab: LabProps = {
         types, type, changeType, schemas, pair, setPair, symbols, timeframe, setTimeframe, timeframes,
         fields, indicators, setIndicator, highlight, risk, setRiskField, period, setPeriod, capital, setCapital: setCapitalPref,
         running, runBacktest, openSave: () => setShowSave(true), run, candles, digits, loadCombo,
-        tab, setTab: setTabPref, error, optData, optimizing, runOptimize,
+        tab, setTab: setTabPref, error, optData, optimizing, runOptimize, addFavorite, favSaved,
     };
 
     return (
@@ -242,6 +265,7 @@ interface LabProps {
     running: boolean; runBacktest: () => void; openSave: () => void; run: Run | null; candles: Candle[]; digits: number; loadCombo: (p: Record<string, number | string>) => void;
     tab: Tab; setTab: (t: Tab) => void; error: string | null;
     optData: Optimization | null; optimizing: boolean; runOptimize: () => void;
+    addFavorite: () => void; favSaved: boolean;
 }
 
 // ---------- Layout dashboard: dos zonas de scroll (sidebar + content) ----------
@@ -343,6 +367,9 @@ function Buttons({ lab }: { lab: LabProps }) {
                 <button type="button" onClick={lab.runOptimize} disabled={lab.optimizing || lab.running} className="rounded-md border border-border px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated disabled:opacity-50">{lab.optimizing ? 'Optimizando…' : 'Optimizar'}</button>
                 <button type="button" onClick={lab.openSave} className="rounded-md bg-profit px-3 py-2 text-sm font-bold text-white hover:opacity-90">Guardar</button>
             </div>
+            <button type="button" onClick={lab.addFavorite} className="w-full rounded-md border border-warning/60 px-3 py-2 text-sm text-warning hover:bg-warning/10">
+                {lab.favSaved ? '★ Añadido a favoritos' : '☆ Añadir a favoritos'}
+            </button>
         </>
     );
 }

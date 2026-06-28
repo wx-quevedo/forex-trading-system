@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StrategyRequest;
 use App\Models\ExploreSearch;
+use App\Models\Setting;
 use App\Services\BridgeException;
 use App\Services\ManualTuningService;
 use App\Services\PythonBridgeService;
@@ -52,10 +53,7 @@ class ExplorerController extends Controller
             'timeframes' => StrategyRequest::TIMEFRAMES,
             'types' => StrategyRequest::TYPES,
             'meta' => $this->safe(fn () => $this->bridge->exploreMeta(), self::META_FALLBACK),
-            'defaultPeriod' => [
-                'date_from' => now()->subMonths(6)->toDateString(),
-                'date_to' => now()->toDateString(),
-            ],
+            'context' => Setting::analysisContext(),
             'savedSearches' => ExploreSearch::query()
                 ->latest()
                 ->get(['id', 'name', 'total', 'inside', 'created_at']),
@@ -102,6 +100,36 @@ class ExplorerController extends Controller
     public function systemStats(): JsonResponse
     {
         return $this->proxy(fn () => $this->bridge->systemStats());
+    }
+
+    // --- Mapa de cobertura (Fase 8F) ------------------------------------
+    public function coverageMap(): Response
+    {
+        return Inertia::render('CoverageMap', [
+            'schemas' => $this->safe(fn () => $this->manual->schemas(), []),
+            'symbols' => $this->safe(fn () => $this->bridge->tradableSymbolNames(), []),
+            'meta' => $this->safe(fn () => $this->bridge->exploreMeta(), self::META_FALLBACK),
+            'context' => Setting::analysisContext(),
+        ]);
+    }
+
+    public function coverage(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'date_from' => ['required', 'date'],
+            'date_to' => ['required', 'date'],
+            'capital' => ['required', 'numeric', 'min:1'],
+            'path' => ['nullable', 'string'],
+            'pairs' => ['nullable', 'string'],
+        ]);
+
+        return $this->proxy(fn () => $this->bridge->exploreCoverage([
+            'date_from' => Carbon::parse($data['date_from'])->toIso8601String(),
+            'date_to' => Carbon::parse($data['date_to'])->toIso8601String(),
+            'capital' => (float) $data['capital'],
+            'path' => $data['path'] ?? '',
+            'pairs' => $data['pairs'] ?? '',
+        ]));
     }
 
     // --- Búsquedas guardadas (Parte 2) ----------------------------------

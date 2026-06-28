@@ -37,7 +37,7 @@ from ..optimize.engine import (
     _params_key,
     _verdict,
 )
-from .cache import ENGINE_VERSION, ExploreCache, make_cache_key
+from .cache import ENGINE_VERSION, ExploreCache, make_cache_key, params_key_of
 
 # Caché de resultados por combinación (SQLite, junto al bridge).
 _CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "explore_cache.db"
@@ -48,6 +48,7 @@ SL_CHOICES = [15, 20, 30, 50]
 TP_CHOICES = [30, 40, 60, 100]
 RISK_CHOICES = [0.5, 1.0, 2.0]
 SWEEP_TIMEFRAMES = ["M5", "M15", "H1", "H4"]
+EXPLORE_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined"]
 MAX_CONFIGS = 200000  # máximo absoluto de seguridad (rechazo por encima)
 WARN_CONFIGS = 20000  # a partir de aquí el frontend pide confirmación (no bloquea)
 SPLIT = 0.7  # in-sample / out-of-sample
@@ -152,6 +153,8 @@ def _missing_worker(task: tuple) -> tuple[list[dict[str, Any]], float]:
         row = _compute_combo(pair, stype, tf, candles, in_c, out_c, params, sl, tp, rp, cfg)
         if row is not None:
             rows.append(row)
+    # El gc periódico para evitar el access violation de pandas/numpy en Windows
+    # vive en run_backtest (cubre todos los llamadores de forma uniforme).
     return rows, time.perf_counter() - t0
 
 
@@ -323,8 +326,14 @@ class ExploreJob:
                 req["pairs"], req["types"], req["timeframes"],
                 req["sl_choices"], req["tp_choices"], req["risk_choices"],
             )
-        self._thread = threading.Thread(target=self._run, args=(req, client, run_id), daemon=True)
-        self._thread.start()
+        # `sync` (solo tests): corre en el hilo del llamador → pandas en el hilo
+        # principal (numpy/pandas en hilos secundarios es inestable en Windows).
+        if req.get("sync"):
+            self._thread = None
+            self._run(req, client, run_id)
+        else:
+            self._thread = threading.Thread(target=self._run, args=(req, client, run_id), daemon=True)
+            self._thread.start()
         return self.snapshot()
 
     def _is_current(self, run_id: int) -> bool:
@@ -454,8 +463,10 @@ class ExploreJob:
         # Guardar en caché lo recién calculado (parciales, sin veredicto).
         if self._use_cache and computed:
             pair, stype, tf, sl, tp, rp = plan["ctx"]
+            capital = plan["cfg"].get("initial_balance")
             items = [
-                (make_cache_key(pair, stype, tf, p["params"], sl, tp, rp, plan["cfg"], plan["from"], plan["to"]), p)
+                (make_cache_key(pair, stype, tf, p["params"], sl, tp, rp, plan["cfg"], plan["from"], plan["to"]),
+                 p, capital, plan["from"], plan["to"])
                 for p in computed
             ]
             try:
@@ -521,6 +532,59 @@ class ExploreJob:
             with self._lock:
                 if self._executor is ex:
                     self._executor = None
+
+
+def _cell(name: str, explored: int, total: int, **extra: Any) -> dict[str, Any]:
+    explored = min(explored, total)  # por si la caché tuviera de más (no debería)
+    pct = round(explored / total * 100, 1) if total else 0.0
+    return {"name": name, "explored": explored, "total": total, "pct": pct, **extra}
+
+
+def coverage_map(cache: ExploreCache, date_from: Any, date_to: Any, capital: float,
+                 path: list[str], pairs: list[str]) -> dict[str, Any]:
+    """Mapa de cobertura jerárquico para el periodo+capital dados. `path` define el
+    nodo actual: []=pares, [par]=tipos, [par,tipo]=timeframes, [par,tipo,tf]=params.
+    Cada celda lleva explored/total/pct contra el UNIVERSO estándar (rangos del
+    Explorador por defecto). Las celdas vírgenes (0%) también aparecen."""
+    risk_combos = len(SL_CHOICES) * len(TP_CHOICES) * len(RISK_CHOICES)
+    tfs = SWEEP_TIMEFRAMES
+    depth = len(path)
+    symbol = path[0] if depth >= 1 else None
+    stype = path[1] if depth >= 2 else None
+    tf = path[2] if depth >= 3 else None
+    counts = cache.coverage_children(date_from, date_to, capital, symbol, stype, tf)
+
+    cells: list[dict[str, Any]] = []
+    if depth == 0:
+        level = "pairs"
+        per_pair = sum(grid_size(t) for t in EXPLORE_TYPES) * len(tfs) * risk_combos
+        names = sorted(set(p.upper() for p in pairs) | set(cache.distinct_pairs(date_from, date_to, capital)))
+        cells = [_cell(n, counts.get(n, 0), per_pair) for n in names]
+    elif depth == 1:
+        level = "types"
+        cells = [_cell(t, counts.get(t, 0), grid_size(t) * len(tfs) * risk_combos) for t in EXPLORE_TYPES]
+    elif depth == 2:
+        level = "timeframes"
+        per_tf = grid_size(stype) * risk_combos
+        cells = [_cell(t, counts.get(t, 0), per_tf) for t in tfs]
+    else:
+        level = "params"
+        for params in _grid(stype, {}):
+            pk = params_key_of(params)
+            cells.append(_cell(pk, counts.get(pk, 0), risk_combos, params=params))
+
+    total = sum(c["total"] for c in cells)
+    explored = sum(c["explored"] for c in cells)
+    return {
+        "path": path,
+        "level": level,
+        "explorable": depth <= 2,   # pares/tipos/timeframes lanzan exploración; params no
+        "cells": cells,
+        "explored": explored,
+        "total": total,
+        "pct": round(explored / total * 100, 1) if total else 0.0,
+        "context": {"date_from": str(date_from), "date_to": str(date_to), "capital": capital},
+    }
 
 
 job = ExploreJob()

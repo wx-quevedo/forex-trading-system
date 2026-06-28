@@ -43,13 +43,23 @@ def _run_job(job, req, client, timeout=30.0):
     t0 = time.time()
     while job.is_running() and time.time() - t0 < timeout:
         time.sleep(0.05)
+    # Unir el hilo worker antes de devolver: si quedara vivo (pandas) y el siguiente
+    # test arrancara otro, dos hilos en pandas → access violation en Windows.
+    if job._thread is not None:
+        job._thread.join(timeout=timeout)
     return job.snapshot(include_results=True)
+
+
+# Tipo con el grid MÁS pequeño (combined=8): los tests corren en el proceso de
+# pytest, y muchos backtests de pandas seguidos acaban en access violation en
+# Windows; usar el grid pequeño + el gc del motor mantiene el volumen bajo control.
+BASE_TYPE = "combined"
 
 
 def _req(**over):
     base = {
         "pairs": ["EURUSD#"],
-        "types": ["ma_cross"],
+        "types": [BASE_TYPE],
         "timeframes": ["H1"],
         "date_from": datetime(2024, 1, 1, tzinfo=timezone.utc),
         "date_to": datetime(2024, 3, 1, tzinfo=timezone.utc),
@@ -58,8 +68,9 @@ def _req(**over):
         "tp_choices": [40],
         "risk_choices": [1.0],
         "workers": 1,
-        "inprocess": True,   # tests: cómputo en el hilo, sin spawnear procesos
-        "use_cache": False,  # tests aislados de la caché compartida (salvo los de caché)
+        "inprocess": True,   # cómputo en el hilo (sin spawnear procesos)
+        "sync": True,        # en el hilo principal (pandas estable en Windows)
+        "use_cache": False,
     }
     base.update(over)
     return base
@@ -78,7 +89,7 @@ def test_search_produces_report_rows():
     job = ExploreJob()
     snap = _run_job(job, _req(), client)
     assert snap["status"] == "done"
-    assert snap["done"] == snap["total"] == grid_size("ma_cross")
+    assert snap["done"] == snap["total"] == grid_size(BASE_TYPE)
     assert snap["results_count"] >= 1
     for r in snap["results"]:
         for key in ("pair", "type", "timeframe", "params", "sl_pips", "tp_pips",
@@ -98,8 +109,8 @@ def test_candles_fetched_once_per_pair_timeframe():
     """Eficiencia: una sola descarga de velas por (par, tf) aunque haya muchos grupos."""
     client = FakeClient(_wave_candles(440))
     job = ExploreJob()
-    _run_job(job, _req(types=["ma_cross"], sl_choices=[20, 30], tp_choices=[40, 60], risk_choices=[1.0]), client)
-    assert client.candle_calls == 1  # 1 par × 1 tf → 1 sola descarga reusada
+    _run_job(job, _req(sl_choices=[20, 30], tp_choices=[40], risk_choices=[1.0]), client)
+    assert client.candle_calls == 1  # 1 par × 1 tf → 1 sola descarga reusada (varios grupos)
 
 
 def test_skips_groups_with_insufficient_candles():
@@ -195,7 +206,9 @@ def test_parallel_path_matches_sequential(monkeypatch):
             pass
 
     candles = _wave_candles(440)
-    req = _req(sl_choices=[20, 30], tp_choices=[40, 60], risk_choices=[1.0])
+    # Tipo de grid pequeño (combined=8) y 1 grupo: este test corre en el proceso de
+    # pytest (executor síncrono inyectado), así que se mantiene ligero a propósito.
+    req = _req(types=["combined"], sl_choices=[20], tp_choices=[40], risk_choices=[1.0])
 
     seq = _run_job(ExploreJob(), {**req, "workers": 1, "inprocess": True}, FakeClient(candles))
 
@@ -288,3 +301,100 @@ def test_cache_clear_and_stats(tmp_path):
     assert cache.stats()["entries"] > 0
     cache.clear()
     assert cache.stats()["entries"] == 0
+
+
+def test_cache_persists_across_reopen(tmp_path):
+    """Reabrir la caché (simula reiniciar el bridge) NO borra: los datos persisten."""
+    p = str(tmp_path / "persist.db")
+    params = {"period": 14, "oversold": 30, "overbought": 70}
+    row = {"pair": "EURUSD#", "type": "rsi", "timeframe": "H1", "params": params,
+           "sl_pips": 20, "tp_pips": 40, "risk_percent": 1.0, "out_return": 1.0}
+    df, dt = "2025-01-01 00:00:00+00:00", "2025-06-01 00:00:00+00:00"
+    k = make_cache_key("EURUSD#", "rsi", "H1", params, 20, 40, 1.0, {"initial_balance": 10000}, df, dt)
+
+    c1 = ExploreCache(p)
+    c1.put_many([(k, row, 10000.0, df, dt)])
+    assert c1.stats()["entries"] == 1
+
+    c2 = ExploreCache(p)  # "reinicio": nueva instancia, misma ruta
+    assert c2.stats()["entries"] == 1
+    assert k in c2.get_many([k])
+    assert c2.coverage_children(df, dt, 10000.0).get("EURUSD#") == 1
+
+
+def test_old_schema_migrates_without_data_loss(tmp_path):
+    """Una DB con el esquema VIEJO (sin columnas de cobertura) se migra con ALTER,
+    preservando las filas — nunca se recrea/borra."""
+    import sqlite3
+    p = str(tmp_path / "old.db")
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE explore_cache (key TEXT PRIMARY KEY, result TEXT NOT NULL, "
+                "symbol TEXT, type TEXT, timeframe TEXT, engine_version INTEGER, created_at TEXT)")
+    con.execute("INSERT INTO explore_cache (key, result, symbol) VALUES ('old1', '{}', 'EURUSD#')")
+    con.commit()
+    con.close()
+
+    cache = ExploreCache(p)  # debe AÑADIR columnas faltantes, NO borrar
+    assert cache.stats()["entries"] == 1  # fila vieja preservada
+    assert "old1" in cache.get_many(["old1"])
+    # y ahora acepta filas con las columnas nuevas
+    cache.put_many([("k2", {"pair": "GBPUSD#", "type": "rsi", "timeframe": "H1", "params": {"period": 14}},
+                     5000.0, "2025-01-01 00:00:00+00:00", "2025-06-01 00:00:00+00:00")])
+    assert cache.stats()["entries"] == 2
+
+
+def test_engine_version_is_constant():
+    """engine_version no debe cambiar entre llamadas (no auto-incrementar)."""
+    from app.explore.cache import ENGINE_VERSION
+    a = make_cache_key("EURUSD#", "rsi", "H1", {"period": 14}, 20, 40, 1.0, {"initial_balance": 10000}, "x", "y")
+    b = make_cache_key("EURUSD#", "rsi", "H1", {"period": 14}, 20, 40, 1.0, {"initial_balance": 10000}, "x", "y")
+    assert a == b  # misma clave determinista
+    assert isinstance(ENGINE_VERSION, int)
+
+
+def test_coverage_map_counts(tmp_path):
+    from app.explore.engine import EXPLORE_TYPES, SWEEP_TIMEFRAMES, coverage_map
+
+    cache = ExploreCache(str(tmp_path / "c.db"))
+    df = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    dt = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    capital = 5000.0
+    # Cubrir SOLO combined/H1 con sl∈{15,20}, tp=30, riesgo=1 → 2 de 48 combos riesgo.
+    cov_type = BASE_TYPE
+    req = {**_req(use_cache=True, types=[cov_type], timeframes=["H1"],
+                  sl_choices=[15, 20], tp_choices=[30], risk_choices=[1.0]),
+           "date_from": df, "date_to": dt, "capital": capital}
+    snap = _run_job(ExploreJob(cache=cache), req, FakeClient(_wave_candles(440)))
+    assert snap["status"] == "done"
+
+    g = grid_size(cov_type)            # combined = 8
+    risk_universe = 4 * 4 * 3          # 48 (SL×TP×riesgo estándar)
+    covered = g * 2                    # g params × 2 combos riesgo
+
+    # Nivel pares: EURUSD# explorado = covered; total = Σtipos grid × 4tf × 48.
+    cov = coverage_map(cache, df, dt, capital, [], ["EURUSD#"])
+    cell = next(c for c in cov["cells"] if c["name"] == "EURUSD#")
+    assert cell["explored"] == covered
+    assert cell["total"] == sum(grid_size(t) for t in EXPLORE_TYPES) * len(SWEEP_TIMEFRAMES) * risk_universe
+
+    # Nivel tipos: el tipo cubierto = covered; otros 0.
+    cov2 = coverage_map(cache, df, dt, capital, ["EURUSD#"], [])
+    t = {c["name"]: c for c in cov2["cells"]}
+    assert t[cov_type]["explored"] == covered
+    assert t[cov_type]["total"] == g * len(SWEEP_TIMEFRAMES) * risk_universe
+    assert t["macd"]["explored"] == 0
+
+    # Nivel timeframes: H1 con covered; M5 virgen.
+    cov3 = coverage_map(cache, df, dt, capital, ["EURUSD#", cov_type], [])
+    tf = {c["name"]: c for c in cov3["cells"]}
+    assert tf["H1"]["explored"] == covered and tf["H1"]["total"] == g * risk_universe
+    assert tf["M5"]["explored"] == 0
+
+    # Nivel params: g celdas, cada una 2 de 48.
+    cov4 = coverage_map(cache, df, dt, capital, ["EURUSD#", cov_type, "H1"], [])
+    assert len(cov4["cells"]) == g
+    assert all(c["explored"] == 2 and c["total"] == risk_universe for c in cov4["cells"])
+
+    # Distinto capital → 0 cobertura (la caché distingue por capital).
+    cov_other = coverage_map(cache, df, dt, 9999.0, [], ["EURUSD#"])
+    assert all(c["explored"] == 0 for c in cov_other["cells"])

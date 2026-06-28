@@ -1,4 +1,4 @@
-import { Head, router } from '@inertiajs/react';
+import { Head, Link, router } from '@inertiajs/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import SymbolCombobox from '@/Components/SymbolCombobox';
@@ -26,7 +26,7 @@ interface Props {
     timeframes: string[];
     types: string[];
     meta: ExploreMeta;
-    defaultPeriod: { date_from: string; date_to: string };
+    context: { date_from: string; date_to: string; capital: number };
     savedSearches: SavedSearch[];
 }
 
@@ -40,13 +40,16 @@ const stars = (n: number) => '★'.repeat(n) + '☆'.repeat(4 - n);
 const paramsLabel = (p: Record<string, number | string>) =>
     Object.entries(p).map(([k, v]) => `${k.replace(/_/g, ' ')}=${v}`).join(', ');
 
+const _row_key = (r: ExploreResultRow) =>
+    `${r.pair}|${r.type}|${r.timeframe}|${r.sl_pips}|${r.tp_pips}|${r.risk_percent}|${paramsLabel(r.params)}`;
+
 type SortKey =
     | 'pair' | 'type' | 'timeframe' | 'sl_pips' | 'tp_pips' | 'risk_percent'
     | 'capital_final' | 'costs' | 'return_pct' | 'net_pnl' | 'win_rate'
     | 'profit_factor' | 'max_drawdown_pct' | 'total_trades' | 'in_return'
     | 'out_return' | 'robustness';
 
-export default function Explorer({ schemas, symbols, timeframes, types, meta, defaultPeriod, savedSearches }: Props) {
+export default function Explorer({ schemas, symbols, timeframes, types, meta, context, savedSearches }: Props) {
     // --- Selección del usuario ---
     const [pairs, setPairs] = useState<string[]>([]);
     const [selTypes, setSelTypes] = useState<string[]>(types);
@@ -55,8 +58,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
     const [sls, setSls] = useState<number[]>(meta.sl_choices);
     const [tps, setTps] = useState<number[]>(meta.tp_choices);
     const [risks, setRisks] = useState<number[]>(meta.risk_choices);
-    const [period, setPeriod] = useState(defaultPeriod);
-    const [capital, setCapital] = useState<number>(() => Number(localStorage.getItem('forexbot.lab_capital')) || 10000);
+    // Periodo y capital vienen de la MARCA GLOBAL (Ajustes › Contexto): fijos aquí.
+    const period = { date_from: context.date_from, date_to: context.date_to };
+    const capital = context.capital;
     const [workers, setWorkers] = useState<number>(meta.default_workers || 4);
 
     // --- Estado de la búsqueda ---
@@ -73,6 +77,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
     const [fType, setFType] = useState('all');
     const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'robustness', dir: 'desc' });
     const [saveRow, setSaveRow] = useState<ExploreResultRow | null>(null);
+    const [favAdded, setFavAdded] = useState<Set<string>>(new Set());
     const [pageSize, setPageSize] = useState(50);
     const [page, setPage] = useState(1);
 
@@ -186,6 +191,27 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
     const toggleSort = (key: SortKey) =>
         setSort((p) => (p.key === key ? { key, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
 
+    // Añade una combinación a Favoritos (con el contexto = backtest de referencia).
+    const addFavorite = async (r: ExploreResultRow) => {
+        try {
+            await window.axios.post('/favorites', {
+                name: `${schemas[r.type]?.label ?? r.type} ${r.pair} ${r.timeframe}`,
+                source: 'explorer',
+                pair: r.pair, type: r.type, timeframe: r.timeframe, params: r.params,
+                sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent, capital,
+                backtest_from: context.date_from, backtest_to: context.date_to,
+                backtest_metrics: {
+                    return_pct: r.return_pct, net_pnl: r.net_pnl, win_rate: r.win_rate,
+                    profit_factor: r.profit_factor, max_drawdown_pct: r.max_drawdown_pct,
+                    total_trades: r.total_trades, total_costs: r.costs, final_balance: r.capital_final,
+                },
+            });
+            setFavAdded((prev) => new Set(prev).add(_row_key(r)));
+        } catch {
+            setError('No se pudo añadir a favoritos.');
+        }
+    };
+
     // Abre el Laboratorio con la combinación precargada en una PESTAÑA NUEVA
     // (combo en la URL), para no perder el reporte del Explorador.
     const loadToLab = (r: ExploreResultRow) => {
@@ -244,8 +270,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
             if (Array.isArray(c.pairs)) setPairs(c.pairs);
             if (Array.isArray(c.types)) setSelTypes(c.types);
             if (Array.isArray(c.timeframes)) setSelTfs(c.timeframes);
-            if (c.period) setPeriod(c.period);
-            if (c.capital) setCapital(c.capital);
+            // Periodo y capital son la marca global fija → no se sobrescriben al reabrir.
             if (Array.isArray(c.sls)) setSls(c.sls);
             if (Array.isArray(c.tps)) setTps(c.tps);
             if (Array.isArray(c.risks)) setRisks(c.risks);
@@ -298,11 +323,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
                         <ChipToggle options={timeframes.map((t) => ({ value: t, label: t }))} selected={selTfs} onToggle={(v) => toggle(selTfs, setSelTfs, v as string)} />
                     </div>
 
-                    {/* Periodo + capital + workers */}
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                        <Field label="Desde"><input type="date" value={period.date_from} onChange={(e) => setPeriod((p) => ({ ...p, date_from: e.target.value }))} className="input font-mono" /></Field>
-                        <Field label="Hasta"><input type="date" value={period.date_to} onChange={(e) => setPeriod((p) => ({ ...p, date_to: e.target.value }))} className="input font-mono" /></Field>
-                        <Field label="Capital (USD)" help={CAPITAL_HELP}><input type="number" min={1} step={100} value={capital} onChange={(e) => setCapital(Number(e.target.value))} className="input font-mono" /></Field>
+                    {/* Contexto global (fijo) + workers */}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <ContextBanner context={context} />
                         <Field label={`Núcleos (máx ${meta.cpu_count})`}><input type="number" min={1} max={meta.cpu_count} value={workers} onChange={(e) => setWorkers(Math.max(1, Math.min(meta.cpu_count, Number(e.target.value))))} className="input font-mono" /></Field>
                     </div>
                 </div>
@@ -451,7 +474,10 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, de
                                                     : <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${v.cls}`} title={r.verdict_label}>{v.label}</span>}
                                             </td>
                                             <td className="px-3 py-1.5">
-                                                <div className="flex gap-1">
+                                                <div className="flex items-center gap-1">
+                                                    <button type="button" onClick={() => addFavorite(r)} className={`rounded border px-1.5 py-1 text-[13px] leading-none ${favAdded.has(_row_key(r)) ? 'border-warning text-warning' : 'border-border text-text-secondary hover:text-warning'}`} title="Añadir a favoritos">
+                                                        {favAdded.has(_row_key(r)) ? '★' : '☆'}
+                                                    </button>
                                                     <button type="button" onClick={() => loadToLab(r)} className="rounded border border-border px-2 py-1 text-[11px] text-text-primary hover:bg-bg-elevated" title="Inspeccionar en el Laboratorio">Laboratorio</button>
                                                     <button type="button" onClick={() => setSaveRow(r)} className="rounded border border-profit/50 px-2 py-1 text-[11px] text-profit hover:bg-profit/10" title="Guardar como estrategia">Guardar</button>
                                                 </div>
@@ -526,6 +552,22 @@ function PageBtn({ onClick, disabled, children }: { onClick: () => void; disable
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
     return <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">{children}</div>;
+}
+
+function ContextBanner({ context }: { context: { date_from: string; date_to: string; capital: number } }) {
+    return (
+        <div className="rounded-md border border-border bg-bg-elevated px-3 py-2">
+            <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-text-secondary">
+                    Contexto (fijo) <InfoTooltip text={CAPITAL_HELP} />
+                </span>
+                <Link href="/settings/analysis-context" className="text-[11px] text-accent hover:underline">Editar contexto</Link>
+            </div>
+            <div className="mt-0.5 font-mono text-sm text-text-primary">
+                {context.date_from} → {context.date_to} · ${Number(context.capital).toLocaleString()}
+            </div>
+        </div>
+    );
 }
 
 function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {

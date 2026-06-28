@@ -384,6 +384,43 @@ export interface SavedSearch {
     created_at: string;
 }
 
+export interface Favorite {
+    id: number;
+    name: string;
+    source: string;
+    pair: string;
+    type: string;
+    timeframe: string;
+    params: Record<string, number | string>;
+    sl_pips: number | null;
+    tp_pips: number | null;
+    risk_percent: number | null;
+    capital: number;
+    backtest_from: string | null;
+    backtest_to: string | null;
+    backtest_metrics: BacktestMetrics | null;
+    created_at: string;
+}
+
+export interface CoverageCell {
+    name: string;
+    explored: number;
+    total: number;
+    pct: number;
+    params?: Record<string, number | string>;
+}
+
+export interface CoverageMapData {
+    path: string[];
+    level: 'pairs' | 'types' | 'timeframes' | 'params';
+    explorable: boolean;
+    cells: CoverageCell[];
+    explored: number;
+    total: number;
+    pct: number;
+    context: { date_from: string; date_to: string; capital: number };
+}
+
 export interface SystemStats {
     cpu_count: number;
     logical_cores: number;

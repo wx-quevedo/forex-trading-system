@@ -7,6 +7,7 @@ y equity curve listas para el frontend (Recharts + marcadores en el chart).
 
 from __future__ import annotations
 
+import gc
 import math
 from typing import Any
 
@@ -14,6 +15,12 @@ import numpy as np
 import pandas as pd
 
 from ..strategy import build_strategy, signal_series
+
+# Muchos backtests seguidos acumulan basura de pandas/numpy y, en Windows, pueden
+# provocar un access violation. Un gc.collect() periódico (cada N backtests) lo
+# evita; cubre TODOS los llamadores (optimizador, explorador, llamadas directas).
+_RUN_COUNT = 0
+_GC_EVERY = 10
 
 # Barras por año por timeframe (aprox., para anualizar Sharpe/Sortino).
 _BARS_PER_YEAR = {
@@ -38,6 +45,11 @@ def run_backtest(
 ) -> dict[str, Any]:
     if len(candles) < 30:
         raise ValueError("Se necesitan al menos 30 velas para backtestear.")
+
+    global _RUN_COUNT
+    _RUN_COUNT += 1
+    if _RUN_COUNT % _GC_EVERY == 0:
+        gc.collect()
 
     df = pd.DataFrame(candles).sort_values("time").reset_index(drop=True)
 
