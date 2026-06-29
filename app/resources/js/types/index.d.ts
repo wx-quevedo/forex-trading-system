@@ -469,6 +469,9 @@ export interface ExploreResultRow {
     sl_mode?: string;
     regime?: RegimeLabel | null;
     regime_confidence?: number | null;
+    priority?: number;
+    priority_breakdown?: ScoreBreakdown;
+    priority_verdict?: string;
     in_return: number;
     out_return: number;
     robustness: number;
@@ -476,6 +479,10 @@ export interface ExploreResultRow {
     verdict: 'inside' | 'edge' | 'outside';
     verdict_label: string;
 }
+
+// --- Score de Prioridad (mejoras post-fase) ---
+export interface ScoreFactor { label: string; points: number; detail: string }
+export interface ScoreBreakdown { add: ScoreFactor[]; sub: ScoreFactor[] }
 
 // --- Régimen de mercado (Fase 3) ---
 export type RegimeLabel = 'TENDENCIA_ALCISTA' | 'TENDENCIA_BAJISTA' | 'RANGO' | 'VOLATIL';
@@ -500,6 +507,7 @@ export interface ExploreStatus {
     done: number;
     results_count: number;
     inside_count: number;
+    skipped?: { pair: string; timeframe: string; candles: number; reason: string }[];
     current: string | null;
     error: string | null;
     started_at: string | null;

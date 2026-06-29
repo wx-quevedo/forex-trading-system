@@ -49,10 +49,12 @@ type SortKey =
     | 'pair' | 'type' | 'timeframe' | 'sl_pips' | 'tp_pips' | 'risk_percent'
     | 'capital_final' | 'costs' | 'return_pct' | 'net_pnl' | 'win_rate'
     | 'profit_factor' | 'max_drawdown_pct' | 'sharpe' | 'sortino' | 'calmar' | 'expectancy'
-    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime';
+    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime' | 'priority' | 'id';
 
-// Fila con métricas derivadas (Calmar/Expectativa R) calculadas en el frontend.
-type AugRow = ExploreResultRow & { calmar: number | null; expectancy: number | null };
+// Fila con ID estable + métricas derivadas (Calmar/Expectativa R) del frontend.
+type AugRow = ExploreResultRow & { id: number; calmar: number | null; expectancy: number | null };
+
+const PRIORITY_HELP = 'Pauta de PRIORIZACIÓN para validar (0-100), NO un veredicto de rentabilidad. Combina todas las métricas normalizadas por riesgo (no premia el retorno absoluto) y penaliza la fragilidad (drawdown alto no-lineal, expectativa delgada, overfit, mismatch de régimen). "Prioridad #1" = valídala primero en walk-forward; la validación sigue siendo obligatoria. Clic en el número para ver el desglose.';
 
 const SHARPE_HELP = 'Sharpe ratio (anualizado): retorno por unidad de volatilidad TOTAL de la equity. >1 bueno, >2 excelente. Penaliza la inestabilidad. "—" en filas ya cacheadas hasta re-explorar.';
 const SORTINO_HELP = 'Sortino ratio (anualizado): como Sharpe pero solo penaliza la volatilidad a la BAJA (downside). Más justo para estrategias con subidas bruscas. "—" en filas cacheadas hasta re-explorar.';
@@ -98,8 +100,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     const [fPair, setFPair] = useState('all');
     const [fType, setFType] = useState('all');
     const [fMatch, setFMatch] = useState<'all' | 'MATCH' | 'MISMATCH'>('all');
-    const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'robustness', dir: 'desc' });
+    const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'priority', dir: 'desc' });
     const [saveRow, setSaveRow] = useState<ExploreResultRow | null>(null);
+    const [scoreRow, setScoreRow] = useState<AugRow | null>(null);
     const [favAdded, setFavAdded] = useState<Set<string>>(new Set());
     const [pageSize, setPageSize] = useState(50);
     const [page, setPage] = useState(1);
@@ -198,11 +201,12 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     // Aumenta cada fila con Calmar y Expectativa R DERIVADAS (presentes incluso en
     // filas cacheadas que no las traen del motor). Sharpe/Sortino vienen del motor.
     const view = useMemo(() => {
-        const aug = (r: ExploreResultRow): AugRow => {
+        const aug = (r: ExploreResultRow, i: number): AugRow => {
             const dd = Math.abs(r.max_drawdown_pct);
             const calmar = (r.blown || dd === 0) ? null : (r.return_pct * 365 / periodDays) / dd;
             const expectancy = r.expectancy_r ?? (r.sl_pips > 0 ? r.win_rate * (r.tp_pips / r.sl_pips) - (1 - r.win_rate) : null);
-            return { ...r, calmar, expectancy };
+            // ID estable por corrida: orden de cómputo (results es append-only durante la corrida).
+            return { ...r, id: i + 1, calmar, expectancy };
         };
         let rows = results.map(aug);
         if (fVerdict !== 'all') rows = rows.filter((r) => r.verdict === fVerdict);
@@ -266,6 +270,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
 
     const exportCsv = () => {
         const cols: [string, (r: AugRow) => string | number][] = [
+            ['ID', (r) => r.id], ['Prioridad', (r) => r.priority ?? ''],
             ['Par', (r) => r.pair], ['Tipo', (r) => r.type], ['Timeframe', (r) => r.timeframe],
             ['Parametros', (r) => paramsLabel(r.params)], ['SL', (r) => r.sl_pips], ['TP', (r) => r.tp_pips],
             ['Riesgo%', (r) => r.risk_percent], ['CapitalFinal', (r) => r.capital_final], ['Costos', (r) => r.costs],
@@ -486,6 +491,8 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                         <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-bg-elevated">
                                 <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
+                                    <Th k="id" label="#" right s={sort} on={toggleSort} />
+                                    <Th k="priority" label="Prioridad" right s={sort} on={toggleSort} help={PRIORITY_HELP} />
                                     <Th k="pair" label="Par" s={sort} on={toggleSort} />
                                     <Th k="type" label="Tipo" s={sort} on={toggleSort} />
                                     <Th k="timeframe" label="TF" s={sort} on={toggleSort} />
@@ -518,8 +525,15 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                 {pageRows.map((r, i) => {
                                     const v = VERDICT[r.verdict];
                                     const tone = r.verdict === 'inside' ? 'bg-profit/[0.04]' : r.verdict === 'outside' ? 'opacity-70' : '';
+                                    const pColor = r.priority == null ? 'text-text-secondary' : r.priority >= 65 ? 'text-profit' : r.priority >= 40 ? 'text-warning' : 'text-loss';
                                     return (
-                                        <tr key={pageStart + i} className={`border-b border-border/40 last:border-0 ${tone}`}>
+                                        <tr key={r.id} className={`border-b border-border/40 last:border-0 ${tone}`}>
+                                            <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{r.id}</td>
+                                            <td className="px-3 py-1.5 text-right">
+                                                {r.priority != null
+                                                    ? <button type="button" onClick={() => setScoreRow(r)} className={`font-mono text-xs font-bold ${pColor} hover:underline`} title="Ver desglose del score">{r.priority}</button>
+                                                    : <span className="font-mono text-xs text-text-secondary">—</span>}
+                                            </td>
                                             <td className="px-3 py-1.5 font-mono text-xs text-text-primary">{r.pair}</td>
                                             <td className="px-3 py-1.5 text-xs text-text-secondary">{schemas[r.type]?.label ?? r.type}</td>
                                             <td className="px-3 py-1.5 font-mono text-xs">{r.timeframe}</td>
@@ -597,9 +611,24 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             )}
 
             {status && status.status !== 'running' && results.length === 0 && status.total > 0 && (
-                <p className="mt-5 text-center text-sm text-text-secondary">
-                    {status.status === 'cancelled' ? 'Búsqueda cancelada.' : status.status === 'error' ? `Error: ${status.error}` : 'No se evaluó ninguna combinación (¿velas insuficientes en el periodo? prueba un rango más amplio).'}
-                </p>
+                <div className="mt-5 text-center text-sm text-text-secondary">
+                    {status.status === 'cancelled' ? 'Búsqueda cancelada.'
+                        : status.status === 'error' ? `Error: ${status.error}`
+                        : status.skipped && status.skipped.length > 0
+                            ? 'No hay resultados: ningún (par · timeframe) tenía velas suficientes en este rango.'
+                            : 'No se evaluó ninguna combinación en el periodo.'}
+                </div>
+            )}
+
+            {/* Aviso de grupos saltados por falta de velas (B5): motivo claro por par/tf */}
+            {status && status.skipped && status.skipped.length > 0 && (
+                <div className="mt-3 rounded-md border border-warning/40 bg-warning/5 p-3 text-xs text-text-secondary">
+                    <div className="mb-1 font-semibold text-warning">Grupos sin datos suficientes ({status.skipped.length}):</div>
+                    {status.skipped.slice(0, 12).map((s, i) => (
+                        <div key={i} className="font-mono">{s.pair} · {s.timeframe} — {s.candles} velas. {s.reason}</div>
+                    ))}
+                    {status.skipped.length > 12 && <div>… y {status.skipped.length - 12} más.</div>}
+                </div>
             )}
 
             {/* Modal de progreso real, cancelable, con velocidad y ETA */}
@@ -616,6 +645,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
 
             {/* Modal: guardar una combinación como estrategia */}
             {saveRow && <SaveModal row={saveRow} schemas={schemas} onClose={() => setSaveRow(null)} />}
+            {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} onClose={() => setScoreRow(null)} />}
         </AppLayout>
     );
 }
@@ -703,6 +733,42 @@ function Th({ k, label, right, s, on, help }: { k: SortKey; label: string; right
                 {help && <InfoTooltip text={help} />}
             </span>
         </th>
+    );
+}
+
+function ScoreModal({ row, schemas, onClose }: { row: AugRow; schemas: StrategySchemas; onClose: () => void }) {
+    const bd = row.priority_breakdown;
+    const color = row.priority == null ? 'text-text-secondary' : row.priority >= 65 ? 'text-profit' : row.priority >= 40 ? 'text-warning' : 'text-loss';
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+            <div onClick={(e) => e.stopPropagation()} className="max-h-[85vh] w-full max-w-lg overflow-auto rounded-lg border border-border bg-bg-surface p-5 shadow-2xl">
+                <div className="mb-1 flex items-baseline justify-between">
+                    <h2 className="text-sm font-semibold">Estrategia #{row.id} — {schemas[row.type]?.label ?? row.type} {row.pair} {row.timeframe}</h2>
+                    <span className={`font-mono text-lg font-bold ${color}`}>{row.priority ?? '—'}/100</span>
+                </div>
+                <p className="mb-3 font-mono text-[11px] text-text-secondary">{paramsLabel(row.params)} · SL{row.sl_pips}/TP{row.tp_pips} · {row.risk_percent}%</p>
+
+                {bd && (
+                    <>
+                        <div className="mb-2">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-profit">Sumaron</div>
+                            {bd.add.length === 0 ? <div className="text-xs text-text-secondary">—</div> : bd.add.map((f, i) => (
+                                <div key={i} className="flex justify-between text-xs"><span className="text-text-secondary">{f.label} <span className="text-text-secondary/70">({f.detail})</span></span><span className="font-mono text-profit">+{f.points}</span></div>
+                            ))}
+                        </div>
+                        <div className="mb-3">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-loss">Restaron</div>
+                            {bd.sub.length === 0 ? <div className="text-xs text-text-secondary">—</div> : bd.sub.map((f, i) => (
+                                <div key={i} className="flex justify-between text-xs"><span className="text-text-secondary">{f.label} <span className="text-text-secondary/70">({f.detail})</span></span><span className="font-mono text-loss">−{f.points}</span></div>
+                            ))}
+                        </div>
+                    </>
+                )}
+                {row.priority_verdict && <div className="mb-3 rounded-md border border-border bg-bg-elevated p-2.5 text-xs text-text-primary">{row.priority_verdict}</div>}
+                <p className="mb-3 text-[11px] text-text-secondary">La Prioridad es una pauta para decidir QUÉ validar primero, no un veredicto de rentabilidad. Valida siempre en walk-forward (Bot Histórico) antes de operar.</p>
+                <button type="button" onClick={onClose} className="w-full rounded-md border border-border px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated">Cerrar</button>
+            </div>
+        </div>
     );
 }
 

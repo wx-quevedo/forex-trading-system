@@ -30,6 +30,7 @@ from typing import Any
 
 from ..backtest.engine import run_backtest
 from ..strategy.regime import classify_regime
+from .scoring import priority_score
 from ..optimize.engine import (
     MIN_TRADES,
     _grid,
@@ -74,6 +75,16 @@ def estimate_configs(pairs: list[str], types: list[str], timeframes: list[str],
     """Nº total de configuraciones (cada una = un set de backtests in/out/full)."""
     per_group = sum(grid_size(t) for t in types)
     return len(pairs) * len(timeframes) * len(sls) * len(tps) * len(risks) * per_group
+
+
+def _to_dt(v: Any) -> datetime:
+    """Normaliza una fecha (datetime|str ISO) a datetime, para medir el periodo."""
+    if isinstance(v, datetime):
+        return v
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
 
 
 def expectancy_r(win_rate: float, sl: float, tp: float) -> float | None:
@@ -206,6 +217,7 @@ class ExploreJob:
         self.total = 0
         self.done = 0
         self.results: list[dict[str, Any]] = []
+        self.skipped: list[dict[str, Any]] = []  # grupos (par,tf) sin velas suficientes
         self.error: str | None = None
         self.request: dict[str, Any] | None = None
         self.started_at: str | None = None
@@ -294,6 +306,7 @@ class ExploreJob:
                 "done": self.done,
                 "results_count": len(self.results),
                 "inside_count": inside,
+                "skipped": list(self.skipped),  # grupos (par,tf) sin velas suficientes + motivo
                 "current": self.current,
                 "error": self.error,
                 "started_at": self.started_at,
@@ -453,6 +466,16 @@ class ExploreJob:
             for tf in tfs:
                 candles = candle_cache.get((pair, tf), [])
                 if len(candles) < 120:  # grupo inviable → avanzar el progreso igual
+                    n = len(candles)
+                    reason = (
+                        f"El broker no entrega velas de {tf} en este rango "
+                        "(suele faltar histórico intradía lejano: M5/M15 no llegan tan atrás). "
+                        "Prueba un rango más RECIENTE para este timeframe."
+                        if n == 0 else
+                        f"Solo {n} velas en el rango (insuficientes para backtestear)."
+                    )
+                    with self._lock:
+                        self.skipped.append({"pair": pair, "timeframe": tf, "candles": n, "reason": reason})
                     self._add_done(run_id, configs_per_group_set)
                     continue
                 # Régimen del periodo: una vez por (par, tf), metadato para las filas.
@@ -516,9 +539,16 @@ class ExploreJob:
         # Estampa el régimen del periodo (metadato por par/tf) en cada fila —
         # cacheadas y nuevas por igual; no se guarda en caché (es del periodo).
         reg = plan.get("regime") or {}
+        period_days = max(1.0, (_to_dt(plan["to"]) - _to_dt(plan["from"])).days)
         for r in rows:
             r["regime"] = reg.get("regime")
             r["regime_confidence"] = reg.get("confidence")
+            # Prioridad (pauta para validar, NO veredicto). Metadato derivado: se
+            # calcula sobre resultados existentes, no toca la clave de caché.
+            sc = priority_score(r, period_days)
+            r["priority"] = sc["score"]
+            r["priority_breakdown"] = sc["breakdown"]
+            r["priority_verdict"] = sc["verdict"]
         pair, stype, tf = plan["ctx"][0], plan["ctx"][1], plan["ctx"][2]
         self._consume(run_id, rows, compute_s, plan["grid"], f"{pair} · {tf} · {stype}", plan["hits"], plan["misses"])
 
