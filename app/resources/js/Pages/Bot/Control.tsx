@@ -75,7 +75,7 @@ export default function Control({ strategies, favorites, status: initialStatus, 
         if (!sym) { setUpcoming([]); return; }
         let alive = true;
         window.axios.get('/api/calendar/upcoming', { params: { symbol: sym, hours: 168, impact: 'high' } })
-            .then(({ data }) => { if (alive) setUpcoming(data?.events ?? []); })
+            .then(({ data }) => { if (alive) setUpcoming(data?.data?.events ?? []); })
             .catch(() => { if (alive) setUpcoming([]); });
         return () => { alive = false; };
     }, [addStrategy?.pair]);

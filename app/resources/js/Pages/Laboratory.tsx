@@ -208,7 +208,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
             const { data } = await window.axios.get(`/api/market/regime/${encodeURIComponent(pair)}`, {
                 params: { timeframe, from: period.date_from, to: period.date_to },
             });
-            regime = data?.regime ?? null; regime_confidence = data?.confidence ?? null;
+            regime = data?.data?.regime ?? null; regime_confidence = data?.data?.confidence ?? null;
         } catch { /* el régimen es opcional */ }
         try {
             await window.axios.post('/favorites', {

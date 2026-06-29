@@ -165,7 +165,7 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
         const labels = sims.map((f) => `${f.pair}·${f.timeframe}·${f.type}`);
         let alive = true;
         window.axios.post('/api/portfolio/correlation', { labels, series })
-            .then(({ data }) => { if (alive) setCorr({ labels: data.labels ?? labels, matrix: data.matrix ?? [] }); })
+            .then(({ data }) => { if (alive) setCorr({ labels: data?.data?.labels ?? labels, matrix: data?.data?.matrix ?? [] }); })
             .catch(() => { if (alive) setCorr(null); });
         return () => { alive = false; };
     }, [results, selected, favorites]);
@@ -314,10 +314,10 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
     useEffect(() => {
         let alive = true;
         window.axios.get(`/api/market/regime/${encodeURIComponent(fav.pair)}`, { params: { timeframe: fav.timeframe, from: op.date_from, to: op.date_to } })
-            .then(({ data }) => { if (alive) setOpRegime(data?.regime ?? null); })
+            .then(({ data }) => { if (alive) setOpRegime(data?.data?.regime ?? null); })
             .catch(() => { if (alive) setOpRegime(null); });
         window.axios.get('/api/calendar/events', { params: { symbol: fav.pair, from: op.date_from, to: op.date_to, impact: 'high' } })
-            .then(({ data }) => { if (alive) setCalEvents(data?.events ?? []); })
+            .then(({ data }) => { if (alive) setCalEvents(data?.data?.events ?? []); })
             .catch(() => { if (alive) setCalEvents([]); });
         return () => { alive = false; };
     }, [fav.pair, fav.timeframe, op.date_from, op.date_to]);
