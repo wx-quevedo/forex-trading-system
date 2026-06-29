@@ -119,13 +119,17 @@ class PythonBridgeService
     // --- Mercado ---------------------------------------------------------
     public function price(string $symbol): array
     {
-        return $this->request('GET', "/price/{$symbol}");
+        // rawurlencode: símbolos con sufijo '#' (GOLD#, US500Cash#) si no, el '#' se
+        // interpreta como fragmento de URL y el bridge recibe el símbolo truncado.
+        return $this->request('GET', '/price/' . rawurlencode($symbol));
     }
 
     public function candles(string $symbol, array $query = []): array
     {
         // $query: timeframe, from, to, count
-        return $this->request('GET', "/candles/{$symbol}", ['query' => $query]);
+        // rawurlencode: el '#' de los símbolos de XM (GOLD#, US500Cash#) si va crudo en
+        // la ruta se trata como fragmento de URL → el bridge recibiría 'GOLD' truncado.
+        return $this->request('GET', '/candles/' . rawurlencode($symbol), ['query' => $query]);
     }
 
     /** Régimen de mercado del periodo (Fase 3). $query: timeframe, from, to, count. */

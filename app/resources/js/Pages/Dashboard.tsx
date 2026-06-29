@@ -59,7 +59,7 @@ export default function Dashboard({ account, positions, candles, symbols, symbol
         let active = true;
         const fetchPrice = async () => {
             try {
-                const { data } = await window.axios.get(`/api/market/price/${symbol}`);
+                const { data } = await window.axios.get(`/api/market/price/${encodeURIComponent(symbol)}`);
                 if (active && data.data) setTick(data.data as Tick);
             } catch {
                 /* ignore */
