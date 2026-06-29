@@ -102,5 +102,8 @@ Route::middleware('auth')->group(function () {
         Route::get('/market/symbol/{symbol}', [MarketController::class, 'symbol']);
         Route::get('/market/session/{symbol}', [MarketController::class, 'session']);
         Route::get('/market/positions', [MarketController::class, 'positions']);
+        Route::get('/calendar/events', [MarketController::class, 'calendarEvents']);
+        Route::get('/calendar/upcoming', [MarketController::class, 'calendarUpcoming']);
+        Route::post('/portfolio/correlation', [MarketController::class, 'portfolioCorrelation']);
     });
 });

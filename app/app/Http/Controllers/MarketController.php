@@ -61,6 +61,58 @@ class MarketController extends Controller
         return $this->safe(fn () => $this->bridge->marketRegime(strtoupper($symbol), $query));
     }
 
+    /** Calendario económico — eventos en un periodo (Fase 6, marcado/contexto). */
+    public function calendarEvents(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'from' => ['required', 'date'],
+            'to' => ['required', 'date'],
+            'symbol' => ['nullable', 'string', 'max:20'],
+            'impact' => ['nullable', 'string'],
+        ]);
+        $query = [
+            'from' => \Illuminate\Support\Carbon::parse($v['from'])->toIso8601String(),
+            'to' => \Illuminate\Support\Carbon::parse($v['to'])->toIso8601String(),
+            'impact' => $v['impact'] ?? 'high',
+        ];
+        if (! empty($v['symbol'])) {
+            $query['symbol'] = strtoupper($v['symbol']);
+        }
+
+        return $this->safe(fn () => $this->bridge->calendarEvents($query));
+    }
+
+    /** Calendario económico — próximos eventos del símbolo (Fase 6, defensa en vivo). */
+    public function calendarUpcoming(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'symbol' => ['nullable', 'string', 'max:20'],
+            'hours' => ['nullable', 'integer', 'min:1', 'max:336'],
+            'impact' => ['nullable', 'string'],
+        ]);
+        $query = ['hours' => $v['hours'] ?? 48, 'impact' => $v['impact'] ?? 'high'];
+        if (! empty($v['symbol'])) {
+            $query['symbol'] = strtoupper($v['symbol']);
+        }
+
+        return $this->safe(fn () => $this->bridge->calendarUpcoming($query));
+    }
+
+    /** Matriz de correlación entre estrategias (Fase 7, análisis del Bot Histórico). */
+    public function portfolioCorrelation(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'labels' => ['nullable', 'array'],
+            'series' => ['required', 'array', 'min:2'],
+            'series.*' => ['array'],
+        ]);
+
+        return $this->safe(fn () => $this->bridge->portfolioCorrelation([
+            'labels' => $v['labels'] ?? [],
+            'series' => $v['series'],
+        ]));
+    }
+
     public function symbol(string $symbol): JsonResponse
     {
         return $this->safe(fn () => $this->bridge->symbolInfo(strtoupper($symbol)));

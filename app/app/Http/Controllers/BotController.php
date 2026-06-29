@@ -68,12 +68,17 @@ class BotController extends Controller
             'daily_loss_limit' => ['required', 'numeric', 'min:0'],
             'max_positions' => ['required', 'integer', 'min:1', 'max:20'],
             'timeframe' => ['nullable', Rule::in(StrategyRequest::TIMEFRAMES)],
+            'news_filter' => ['nullable', 'boolean'],
+            'news_window_min' => ['nullable', 'integer', 'min:1', 'max:120'],
+            'cb_max_losses' => ['nullable', 'integer', 'min:0', 'max:50'],
+            'cb_max_drawdown_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'portfolio_heat_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
         ]);
 
         $strategy = Strategy::findOrFail($data['strategy_id']);
 
         try {
-            $status = $this->startStrategy($strategy, (float) $data['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], $data['timeframe'] ?? null);
+            $status = $this->startStrategy($strategy, (float) $data['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], $data['timeframe'] ?? null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0));
         } catch (BridgeException $e) {
             return response()->json(['error' => $e->getMessage()], $e->status);
         } catch (Throwable $e) {
@@ -96,6 +101,11 @@ class BotController extends Controller
             'favorites.*.lot' => ['required', 'numeric', 'gt:0', 'max:100'],
             'daily_loss_limit' => ['required', 'numeric', 'min:0'],
             'max_positions' => ['required', 'integer', 'min:1', 'max:20'],
+            'news_filter' => ['nullable', 'boolean'],
+            'news_window_min' => ['nullable', 'integer', 'min:1', 'max:120'],
+            'cb_max_losses' => ['nullable', 'integer', 'min:0', 'max:50'],
+            'cb_max_drawdown_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'portfolio_heat_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
         ]);
 
         $errors = [];
@@ -127,7 +137,7 @@ class BotController extends Controller
             );
 
             try {
-                $this->startStrategy($strategy, (float) $row['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], null);
+                $this->startStrategy($strategy, (float) $row['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0));
             } catch (Throwable $e) {
                 $errors[] = "{$fav->name}: " . $e->getMessage();
             }
@@ -141,7 +151,7 @@ class BotController extends Controller
      * cierra corridas previas, crea la corrida, llama al bridge y notifica/loguea.
      * Lanza si el bridge falla (el caller decide la respuesta).
      */
-    private function startStrategy(Strategy $strategy, float $lot, float $dailyLossLimit, int $maxPositions, ?string $timeframe): array
+    private function startStrategy(Strategy $strategy, float $lot, float $dailyLossLimit, int $maxPositions, ?string $timeframe, bool $newsFilter = false, int $newsWindowMin = 15, int $cbMaxLosses = 0, float $cbMaxDrawdownPct = 0.0, float $portfolioHeatPct = 0.0): array
     {
         $params = $strategy->parameters ?? [];
         $risk = $params['risk'] ?? [];
@@ -172,6 +182,11 @@ class BotController extends Controller
                 'tp_pips' => (float) ($risk['tp_pips'] ?? 40),
                 'daily_loss_limit' => $dailyLossLimit,
                 'max_positions' => $maxPositions,
+                'news_filter' => $newsFilter,
+                'news_window_min' => $newsWindowMin,
+                'cb_max_losses' => $cbMaxLosses,
+                'cb_max_drawdown_pct' => $cbMaxDrawdownPct,
+                'portfolio_heat_pct' => $portfolioHeatPct,
             ]);
         } catch (Throwable $e) {
             $run->update(['status' => 'error', 'stopped_at' => now()]);

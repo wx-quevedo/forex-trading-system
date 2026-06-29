@@ -8,6 +8,7 @@ import InfoTooltip from '@/Components/InfoTooltip';
 import { fmtMoney, fmtNumber } from '@/lib/format';
 import { DISPLAY_TZ_OFFSET_SECONDS } from '@/lib/tz';
 import { REGIME_META, matchVerdict } from '@/lib/regime';
+import { type CalEvent, eventNear } from '@/lib/calendar';
 import type { BacktestMetrics, BacktestTrade, Candle, EquityPoint, Favorite, RegimeLabel } from '@/types';
 
 const REGIME_WF_HELP = 'Régimen del periodo de BACKTEST (snapshot del favorito) vs el régimen del periodo de OPERACIÓN. Si el régimen cambió (p.ej. de rango a tendencia), una estrategia de reversión puede degradarse aunque su lógica sea correcta: es un MISMATCH sobrevenido.';
@@ -33,6 +34,7 @@ const VERDICT: Record<string, { label: string; cls: string }> = {
     na: { label: 'sin referencia', cls: 'bg-bg-elevated text-text-secondary' },
 };
 
+const CORR_HELP = 'Correlación de Pearson entre los retornos de cada par de estrategias en el periodo. +1 = se mueven idénticamente (diversificación FALSA: creías diversificar pero el riesgo está concentrado); 0 = independientes (diversificación REAL); negativo = se compensan. Recordatorio P6: en una crisis las correlaciones tienden a 1.0 y "todo se mueve junto".';
 const WF_HELP = 'Walk-forward: compara el periodo de OPERACIÓN (datos posteriores que la estrategia nunca vio) contra el BACKTEST de referencia. Como los periodos duran distinto, se ANUALIZAN los retornos para comparar. Veredicto: CUMPLE (logra ≥70% del retorno anualizado esperado y sigue en positivo), SE DEGRADA (rinde menos), FALLA (pierde o quiebra en datos nuevos).';
 
 const days = (from?: string | null, to?: string | null) =>
@@ -77,6 +79,22 @@ function aggregateEquity(curves: EquityPoint[][], initials: number[]): EquityPoi
     return out;
 }
 
+/** Series de RETORNOS por estrategia, alineadas a una línea temporal común
+ *  (forward-fill). Base de la matriz de correlación (Fase 7). */
+function alignedReturns(curves: EquityPoint[][], initials: number[]): number[][] {
+    const times = [...new Set(curves.flatMap((c) => c.map((p) => p.time)))].sort((a, b) => a - b);
+    const idx = curves.map(() => 0);
+    const last = initials.slice();
+    const equities: number[][] = curves.map(() => []);
+    for (const t of times) {
+        curves.forEach((c, i) => {
+            while (idx[i] < c.length && c[idx[i]].time <= t) { last[i] = c[idx[i]].equity; idx[i]++; }
+            equities[i].push(last[i]);
+        });
+    }
+    return equities.map((eq) => eq.slice(1).map((v, k) => (eq[k] ? (v - eq[k]) / eq[k] : 0)));
+}
+
 export default function BotHistorico({ favorites, defaultOperation }: Props) {
     const [selected, setSelected] = useState<Set<number>>(new Set());
     const [op, setOp] = useState(defaultOperation);
@@ -84,6 +102,7 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
     const [progress, setProgress] = useState({ done: 0, total: 0 });
     const [results, setResults] = useState<Record<number, SimResult>>({});
     const [error, setError] = useState<string | null>(null);
+    const [corr, setCorr] = useState<{ labels: string[]; matrix: (number | null)[][] } | null>(null);
 
     const toggle = (id: number) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
     const selectedFavs = favorites.filter((f) => selected.has(f.id));
@@ -136,6 +155,20 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
             ops, costs, win_rate: ops ? wins / ops : 0, curve,
         };
     })();
+
+    // Correlación entre estrategias (Fase 7): se calcula en el bridge sobre las
+    // series de retornos alineadas. Análisis puro, no toca operaciones.
+    useEffect(() => {
+        const sims = favorites.filter((f) => selected.has(f.id) && results[f.id]?.metrics);
+        if (sims.length < 2) { setCorr(null); return; }
+        const series = alignedReturns(sims.map((f) => results[f.id].equity), sims.map((f) => f.capital));
+        const labels = sims.map((f) => `${f.pair}·${f.timeframe}·${f.type}`);
+        let alive = true;
+        window.axios.post('/api/portfolio/correlation', { labels, series })
+            .then(({ data }) => { if (alive) setCorr({ labels: data.labels ?? labels, matrix: data.matrix ?? [] }); })
+            .catch(() => { if (alive) setCorr(null); });
+        return () => { alive = false; };
+    }, [results, selected, favorites]);
 
     return (
         <AppLayout title="Bot Histórico (walk-forward)" wide>
@@ -250,6 +283,15 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
                 </section>
             )}
 
+            {/* Correlación entre estrategias (Fase 7) */}
+            {corr && corr.matrix.length > 1 && (
+                <section className="mb-4 rounded-lg border border-border bg-bg-surface p-4">
+                    <h2 className="mb-1 inline-flex items-center gap-1 text-sm font-semibold">Correlación entre estrategias<InfoTooltip text={CORR_HELP} /></h2>
+                    <p className="mb-2 text-[11px] text-text-secondary">Sobre los retornos del periodo. Cerca de +1 = se mueven juntas (diversificación FALSA); cerca de 0 o negativo = diversificación REAL. En crisis, las correlaciones tienden a 1.0 (P6).</p>
+                    <CorrelationMatrix labels={corr.labels} matrix={corr.matrix} />
+                </section>
+            )}
+
             {/* Tarjeta por estrategia */}
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
                 {selectedFavs.map((f) => {
@@ -268,11 +310,15 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
     const [showTrades, setShowTrades] = useState(false);
     // Régimen del periodo de OPERACIÓN (el del backtest viene en el favorito).
     const [opRegime, setOpRegime] = useState<RegimeLabel | null | undefined>(undefined);
+    const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
     useEffect(() => {
         let alive = true;
         window.axios.get(`/api/market/regime/${encodeURIComponent(fav.pair)}`, { params: { timeframe: fav.timeframe, from: op.date_from, to: op.date_to } })
             .then(({ data }) => { if (alive) setOpRegime(data?.regime ?? null); })
             .catch(() => { if (alive) setOpRegime(null); });
+        window.axios.get('/api/calendar/events', { params: { symbol: fav.pair, from: op.date_from, to: op.date_to, impact: 'high' } })
+            .then(({ data }) => { if (alive) setCalEvents(data?.events ?? []); })
+            .catch(() => { if (alive) setCalEvents([]); });
         return () => { alive = false; };
     }, [fav.pair, fav.timeframe, op.date_from, op.date_to]);
     if (res.error) {
@@ -286,6 +332,13 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
         win != null && fav.sl_pips ? win * ((fav.tp_pips ?? 0) / fav.sl_pips) - (1 - win) : null;
     const fmtR = (v: number | null) => (v != null ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}R` : '—');
     const fmtN = (v: number | null | undefined) => (v != null ? fmtNumber(Number(v)) : '—');
+    // Contexto de noticias (Fase 6): ¿qué operaciones coinciden con eventos de alto
+    // impacto? CONTEXTUALIZA outliers, no prueba causa.
+    const EV_WIN = 60;
+    const nearEvent = (t: BacktestTrade) => eventNear(t.exit_time, calEvents, EV_WIN) ?? eventNear(t.entry_time, calEvents, EV_WIN);
+    const tradesNear = res.trades.filter(nearEvent).length;
+    const worst = res.trades.length ? res.trades.reduce((a, b) => (b.pnl < a.pnl ? b : a)) : null;
+    const worstEvent = worst ? nearEvent(worst) : null;
     const annA = annualize(A.return_pct, opDays);
     const annB = B ? annualize(Number(B.return_pct), bDays) : 0;
     const v = verdictOf(annA, annB, !!A.blown);
@@ -322,6 +375,17 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
                     ? <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${mv.badge}`} title={mv.help}>{mv.label}</span>
                     : null; })()}
             </div>
+
+            {/* Contexto de noticias (Fase 6): coincidencias con eventos de alto impacto */}
+            {calEvents.length > 0 && (
+                <div className="mb-2 text-[11px] text-text-secondary" title="Coincidencia temporal con eventos de alto impacto (±60 min). Es CONTEXTO, no causa probada.">
+                    <span className="inline-flex items-center gap-1">Noticias:</span>{' '}
+                    {tradesNear} de {res.trades.length} ops coinciden con eventos de alto impacto
+                    {worstEvent && (
+                        <span className="text-loss"> · la peor pérdida ({fmtMoney(worst!.pnl)}) coincide con {worstEvent.title}{worstEvent.status === 'por_verificar' ? ' (fecha por verificar)' : ''}</span>
+                    )}
+                </div>
+            )}
 
             {/* Tabla A / B / Δ */}
             <table className="w-full text-sm">
@@ -381,6 +445,39 @@ function GlobalCard({ label, value, color, help }: { label: string; value: strin
         <div className="rounded-lg border border-border bg-bg-elevated px-3 py-2">
             <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-text-secondary">{label}{help && <InfoTooltip text={help} />}</div>
             <div className={`font-mono text-base font-semibold ${color ?? 'text-text-primary'}`}>{value}</div>
+        </div>
+    );
+}
+
+function corrColor(v: number | null): string {
+    if (v == null) return 'bg-bg-elevated text-text-secondary';
+    if (v >= 0.7) return 'bg-loss/30 text-loss';            // muy correlacionadas → diversif. falsa
+    if (v >= 0.3) return 'bg-warning/20 text-warning';
+    if (v > -0.3) return 'bg-bg-elevated text-text-primary'; // independientes
+    return 'bg-profit/20 text-profit';                      // se compensan
+}
+
+function CorrelationMatrix({ labels, matrix }: { labels: string[]; matrix: (number | null)[][] }) {
+    return (
+        <div className="overflow-auto">
+            <table className="text-xs font-mono">
+                <thead>
+                    <tr>
+                        <th className="p-1" />
+                        {labels.map((l, i) => (<th key={i} className="p-1 text-text-secondary" title={l}>{i + 1}</th>))}
+                    </tr>
+                </thead>
+                <tbody>
+                    {matrix.map((row, i) => (
+                        <tr key={i}>
+                            <td className="whitespace-nowrap p-1 pr-2 text-right text-text-secondary" title={labels[i]}>{i + 1}. {labels[i]}</td>
+                            {row.map((v, j) => (
+                                <td key={j} className={`p-1 text-center ${corrColor(v)}`} title={`${labels[i]} ↔ ${labels[j]}`}>{v == null ? '—' : v.toFixed(2)}</td>
+                            ))}
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
         </div>
     );
 }

@@ -294,11 +294,12 @@ export interface BotRunSummary {
     started_at: string | null;
     magic: number;
     strategy: { type: string; params: Record<string, unknown>; symbol: string; timeframe: string };
-    config: { lot: number; sl_pips: number; tp_pips: number; daily_loss_limit: number; max_positions: number };
+    config: { lot: number; sl_pips: number; tp_pips: number; daily_loss_limit: number; max_positions: number; news_filter?: boolean; news_window_min?: number; cb_max_losses?: number; cb_max_drawdown_pct?: number };
     realized_pnl_today: number;
     floating_pnl: number;
     daily_pnl: number;
     open_positions: number;
+    loss_streak?: number;
 }
 
 export interface BotExposure {
@@ -320,6 +321,9 @@ export interface BotStatus {
     daily_pnl?: number;
     exposure?: Record<string, BotExposure>;
     journal?: BotEvent[];
+    portfolio_heat_pct?: number;       // límite global configurado (Fase 7)
+    portfolio_heat_used_pct?: number;  // riesgo agregado en uso ahora
+    portfolio_risk_usd?: number;
 }
 
 export interface TelegramSettings {

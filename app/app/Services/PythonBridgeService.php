@@ -134,6 +134,24 @@ class PythonBridgeService
         return $this->request('GET', '/market/regime/' . rawurlencode($symbol), ['query' => $query], timeout: 30);
     }
 
+    /** Calendario económico — eventos en un periodo (Fase 6). $query: from, to, symbol, impact. */
+    public function calendarEvents(array $query = []): array
+    {
+        return $this->request('GET', '/calendar/events', ['query' => $query], timeout: 30);
+    }
+
+    /** Calendario económico — próximos eventos del símbolo (Fase 6). $query: symbol, hours, impact. */
+    public function calendarUpcoming(array $query = []): array
+    {
+        return $this->request('GET', '/calendar/upcoming', ['query' => $query], timeout: 30);
+    }
+
+    /** Matriz de correlación entre estrategias (Fase 7). $body: labels, series. */
+    public function portfolioCorrelation(array $body): array
+    {
+        return $this->request('POST', '/portfolio/correlation', ['json' => $body], timeout: 30);
+    }
+
     public function positions(?string $symbol = null): array
     {
         return $this->request('GET', '/positions', $symbol ? ['query' => ['symbol' => $symbol]] : []);

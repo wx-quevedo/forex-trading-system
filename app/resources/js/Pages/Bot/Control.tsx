@@ -7,6 +7,7 @@ import BotHistoryTable from '@/Components/BotHistoryTable';
 import TradeDetail from '@/Components/TradeDetail';
 import LiveClock from '@/Components/LiveClock';
 import { fmtMoney, fmtTimeMs, pnlColor } from '@/lib/format';
+import { type CalEvent, fmtEventUtc } from '@/lib/calendar';
 import type { BotClosedTrade, BotEvent, BotRunSummary, BotSignal, BotStatus, Candle, Favorite, Strategy, TelegramSettings } from '@/types';
 
 interface Props {
@@ -44,6 +45,13 @@ export default function Control({ strategies, favorites, status: initialStatus, 
     const [lot, setLot] = useState(0.01);
     const [dailyLossLimit, setDailyLossLimit] = useState(100);
     const [maxPositions, setMaxPositions] = useState(1);
+    const [newsFilter, setNewsFilter] = useState(false);
+    const [newsWindowMin, setNewsWindowMin] = useState(15);
+    const [upcoming, setUpcoming] = useState<CalEvent[]>([]);
+    // Circuit breakers (por estrategia) + portfolio heat (global) — Fase 7.
+    const [cbMaxLosses, setCbMaxLosses] = useState(0);
+    const [cbMaxDrawdownPct, setCbMaxDrawdownPct] = useState(0);
+    const [portfolioHeatPct, setPortfolioHeatPct] = useState(0);
     const [timeframe, setTimeframe] = useState(() => localStorage.getItem('forexbot.bot_tf') ?? '');
     const setTf = (v: string) => { setTimeframe(v); localStorage.setItem('forexbot.bot_tf', v); };
 
@@ -60,6 +68,17 @@ export default function Control({ strategies, favorites, status: initialStatus, 
     const stratById = useMemo(() => Object.fromEntries(strategies.map((s) => [s.id, s])), [strategies]);
     const strategyName = (id?: number) => (id != null ? stratById[id]?.name ?? `#${id}` : '—');
     const addStrategy = strategies.find((s) => s.id === addId);
+
+    // Próximos eventos de alto impacto del símbolo a añadir (defensa en vivo).
+    useEffect(() => {
+        const sym = addStrategy?.pair;
+        if (!sym) { setUpcoming([]); return; }
+        let alive = true;
+        window.axios.get('/api/calendar/upcoming', { params: { symbol: sym, hours: 168, impact: 'high' } })
+            .then(({ data }) => { if (alive) setUpcoming(data?.events ?? []); })
+            .catch(() => { if (alive) setUpcoming([]); });
+        return () => { alive = false; };
+    }, [addStrategy?.pair]);
 
     useEffect(() => {
         if (runs.length === 0) { setSelectedSid(null); return; }
@@ -131,7 +150,7 @@ export default function Control({ strategies, favorites, status: initialStatus, 
         }
     };
 
-    const add = () => action('/bot/start', { strategy_id: addId, lot, daily_loss_limit: dailyLossLimit, max_positions: maxPositions, timeframe: timeframe || addStrategy?.timeframe });
+    const add = () => action('/bot/start', { strategy_id: addId, lot, daily_loss_limit: dailyLossLimit, max_positions: maxPositions, timeframe: timeframe || addStrategy?.timeframe, news_filter: newsFilter, news_window_min: newsWindowMin, cb_max_losses: cbMaxLosses, cb_max_drawdown_pct: cbMaxDrawdownPct, portfolio_heat_pct: portfolioHeatPct });
     const panic = () => { if (confirm('¿Cerrar TODAS las posiciones de TODAS las estrategias y detener el bot?')) action('/bot/panic'); };
 
     // --- Cargar desde Favoritos (Fase 8) ---
@@ -148,6 +167,8 @@ export default function Control({ strategies, favorites, status: initialStatus, 
         await action('/bot/load-favorites', {
             favorites: confirmRows.map((r) => ({ favorite_id: r.fav.id, lot: r.lot })),
             daily_loss_limit: dailyLossLimit, max_positions: maxPositions,
+            news_filter: newsFilter, news_window_min: newsWindowMin,
+            cb_max_losses: cbMaxLosses, cb_max_drawdown_pct: cbMaxDrawdownPct, portfolio_heat_pct: portfolioHeatPct,
         });
         setConfirmRows(null);
         setFavSel(new Set());
@@ -212,6 +233,48 @@ export default function Control({ strategies, favorites, status: initialStatus, 
                             <FieldLab label="Límite pérdida diaria"><input type="number" min={0} value={dailyLossLimit} onChange={(e) => setDailyLossLimit(Number(e.target.value))} className="input font-mono" /></FieldLab>
                             <FieldLab label="Máx posiciones"><input type="number" min={1} max={20} value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} className="input font-mono" /></FieldLab>
                         </div>
+
+                        {/* Capa defensiva (Fase 6): pausa por noticias de alto impacto */}
+                        <div className="mt-3 rounded-md border border-border/60 bg-bg-elevated/40 p-2.5">
+                            <label className="flex items-center gap-2 text-xs text-text-primary" title="Gestión de riesgo: durante NFP/FOMC/CPI los spreads se ensanchan y los stops se vuelven teóricos. Con esto el bot NO abre nuevas posiciones dentro de la ventana.">
+                                <input type="checkbox" checked={newsFilter} onChange={(e) => setNewsFilter(e.target.checked)} />
+                                <span>Pausar en noticias de alto impacto</span>
+                            </label>
+                            {newsFilter && (
+                                <div className="mt-2 flex items-center gap-2 text-[11px] text-text-secondary">
+                                    <span>Ventana ±</span>
+                                    <input type="number" min={1} max={120} value={newsWindowMin} onChange={(e) => setNewsWindowMin(Number(e.target.value))} className="input font-mono w-16" />
+                                    <span>min · no abre cerca de NFP/FOMC/CPI</span>
+                                </div>
+                            )}
+                            {upcoming.length > 0 && (
+                                <div className="mt-2 text-[11px]">
+                                    <div className="mb-0.5 text-text-secondary">Próximos eventos ({addStrategy?.pair}):</div>
+                                    {upcoming.slice(0, 3).map((e, i) => (
+                                        <div key={i} className="font-mono text-text-secondary">{fmtEventUtc(e.time)} · {e.currency} · {e.title}</div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Circuit breakers (Fase 7): pausa por racha/drawdown (OFF si 0) */}
+                        <div className="mt-3 rounded-md border border-border/60 bg-bg-elevated/40 p-2.5">
+                            <div className="mb-1.5 text-[11px] uppercase tracking-wide text-text-secondary" title="Una racha de pérdidas o un drawdown brusco pueden señalar un cambio de régimen. Al saltar, la estrategia se PAUSA (no se detiene) para que revises y reanudes.">Circuit breakers (0 = off)</div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <FieldLab label="Máx pérdidas seguidas"><input type="number" min={0} max={50} value={cbMaxLosses} onChange={(e) => setCbMaxLosses(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                                <FieldLab label="Máx drawdown %"><input type="number" min={0} max={100} step={0.5} value={cbMaxDrawdownPct} onChange={(e) => setCbMaxDrawdownPct(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                            </div>
+                        </div>
+
+                        {/* Portfolio heat global (Fase 7) */}
+                        <div className="mt-3 rounded-md border border-border/60 bg-bg-elevated/40 p-2.5">
+                            <FieldLab label="Límite de portfolio heat % (riesgo agregado, 0 = off)">
+                                <input type="number" min={0} max={100} step={0.5} value={portfolioHeatPct} onChange={(e) => setPortfolioHeatPct(Number(e.target.value))} className="input font-mono" />
+                            </FieldLab>
+                            <HeatGauge used={status.portfolio_heat_used_pct ?? 0} limit={status.portfolio_heat_pct ?? portfolioHeatPct} />
+                            <p className="mt-1 text-[11px] text-text-secondary" title="Suma del riesgo (distancia al SL × valor) de TODAS las posiciones del bot / capital. Límite global único (regla del ~6%).">Riesgo agregado en uso vs límite global. No abre nuevas posiciones si se superaría.</p>
+                        </div>
+
                         <button type="button" onClick={add} disabled={busy || !addId} className="mt-4 w-full rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">+ Añadir a la ejecución</button>
                         <p className="mt-2 text-[11px] text-text-secondary">Cada estrategia opera con su propio lote y límites (riesgo independiente).</p>
                     </section>
@@ -396,6 +459,23 @@ function RunRow({ run, name, selected, busy, onSelect, onPause, onResume, onStop
 
 function MiniBtn({ children, onClick, disabled, danger }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean }) {
     return <button type="button" onClick={onClick} disabled={disabled} className={`rounded border border-border px-2 py-0.5 text-[11px] ${danger ? 'text-loss' : 'text-text-primary'} hover:bg-bg-surface disabled:opacity-40`}>{children}</button>;
+}
+
+function HeatGauge({ used, limit }: { used: number; limit: number }) {
+    if (limit <= 0) return <div className="mt-1 text-[11px] text-text-secondary">Heat actual: {used.toFixed(1)}% (sin límite activo)</div>;
+    const pct = Math.min(100, (used / limit) * 100);
+    const tone = used >= limit ? 'bg-loss' : used >= limit * 0.8 ? 'bg-warning' : 'bg-profit';
+    return (
+        <div className="mt-1.5">
+            <div className="mb-0.5 flex justify-between font-mono text-[11px]">
+                <span className={used >= limit ? 'text-loss' : 'text-text-primary'}>{used.toFixed(1)}%</span>
+                <span className="text-text-secondary">límite {limit.toFixed(1)}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded bg-bg-surface">
+                <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
+            </div>
+        </div>
+    );
 }
 
 function Exposure({ exposure }: { exposure: Record<string, { buy: number; sell: number; count: number }> }) {

@@ -56,6 +56,15 @@ def new_run(config: dict[str, Any], magic: int) -> dict[str, Any]:
         "tp_pips": float(config.get("tp_pips", 40)),
         "daily_loss_limit": float(config.get("daily_loss_limit", 100)),
         "max_positions": int(config.get("max_positions", 1)),
+        # Capa defensiva (Fase 6): pausar en ventana de noticia de alto impacto.
+        "news_filter": bool(config.get("news_filter", False)),
+        "news_window_min": int(config.get("news_window_min", 15)),
+        # Circuit breakers (Fase 7, OFF por defecto): pausar tras N pérdidas seguidas
+        # o X% de drawdown (desde el pico de PnL realizado). 0 = desactivado.
+        "cb_max_losses": int(config.get("cb_max_losses", 0)),
+        "cb_max_drawdown_pct": float(config.get("cb_max_drawdown_pct", 0)),
+        "loss_streak": 0,
+        "peak_pnl": 0.0,
         "magic": int(magic),
         "comment": f"bot_s{config['strategy_id']}_{config['symbol']}_{config['timeframe']}"[:31],
         "status": "running",
@@ -85,6 +94,17 @@ class BotState:
     def reset(self) -> None:
         self.runs: dict[int, dict[str, Any]] = {}  # strategy_id -> run
         self.day: str = _today()
+        self.portfolio_heat_pct: float = 0.0  # límite global de riesgo agregado (0 = off)
+
+    def set_portfolio_heat(self, pct: float) -> None:
+        with self._lock:
+            self.portfolio_heat_pct = max(0.0, float(pct))
+
+    def reset_circuit_counters(self, run: dict[str, Any]) -> None:
+        """Reinicia los contadores del circuit breaker (al reanudar/arrancar) para que
+        una estrategia reanudada NO se vuelva a pausar de inmediato con la racha vieja."""
+        run["loss_streak"] = 0
+        run["peak_pnl"] = run.get("realized_pnl_today", 0.0)
 
     # -- persistencia ------------------------------------------------------
     def _load(self) -> None:
@@ -97,6 +117,7 @@ class BotState:
         runs = data.get("runs", {})
         self.runs = {int(k): v for k, v in runs.items()}
         self.day = data.get("day", _today())
+        self.portfolio_heat_pct = float(data.get("portfolio_heat_pct", 0.0))
         # Normalizar claves int en dicts anidados + FAIL-SAFE arranque PAUSADO.
         for run in self.runs.values():
             run["open_tickets"] = {int(k): v for k, v in (run.get("open_tickets") or {}).items()}
@@ -107,7 +128,7 @@ class BotState:
 
     def save(self) -> None:
         with self._lock:
-            data = {"runs": self.runs, "day": self.day}
+            data = {"runs": self.runs, "day": self.day, "portfolio_heat_pct": self.portfolio_heat_pct}
         try:
             self._file.write_text(json.dumps(data, default=str, ensure_ascii=False), encoding="utf-8")
         except Exception:
@@ -137,6 +158,8 @@ class BotState:
             run["day"] = today
             run["realized_pnl_today"] = 0.0
             run["closed_trades"] = []
+            run["loss_streak"] = 0      # día nuevo → contadores del breaker a cero
+            run["peak_pnl"] = 0.0
 
     def global_status(self) -> str:
         statuses = [r["status"] for r in self.runs.values()]
@@ -176,7 +199,11 @@ class BotState:
             trade["strategy_id"] = run["strategy_id"]
             trade["magic"] = run["magic"]
             run["closed_trades"].append(trade)
-            run["realized_pnl_today"] += float(trade.get("pnl", 0.0))
+            pnl = float(trade.get("pnl", 0.0))
+            run["realized_pnl_today"] += pnl
+            # Circuit breaker (Fase 7): racha de pérdidas + pico de PnL para el DD.
+            run["loss_streak"] = (run.get("loss_streak", 0) + 1) if pnl <= 0 else 0
+            run["peak_pnl"] = max(run.get("peak_pnl", 0.0), run["realized_pnl_today"])
 
     # -- snapshot ----------------------------------------------------------
     def snapshot(self, positions_by_magic: dict[int, list[dict[str, Any]]], floating_by_magic: dict[int, float]) -> dict[str, Any]:
@@ -220,11 +247,12 @@ class BotState:
                     "started_at": run.get("started_at"),
                     "magic": magic,
                     "strategy": {"type": run["strategy_type"], "params": run["params"], "symbol": run["symbol"], "timeframe": run["timeframe"]},
-                    "config": {"lot": run["lot"], "sl_pips": run["sl_pips"], "tp_pips": run["tp_pips"], "daily_loss_limit": run["daily_loss_limit"], "max_positions": run["max_positions"]},
+                    "config": {"lot": run["lot"], "sl_pips": run["sl_pips"], "tp_pips": run["tp_pips"], "daily_loss_limit": run["daily_loss_limit"], "max_positions": run["max_positions"], "news_filter": run.get("news_filter", False), "news_window_min": run.get("news_window_min", 15), "cb_max_losses": run.get("cb_max_losses", 0), "cb_max_drawdown_pct": run.get("cb_max_drawdown_pct", 0)},
                     "realized_pnl_today": round(realized, 2),
                     "floating_pnl": round(floating, 2),
                     "daily_pnl": round(realized + floating, 2),
                     "open_positions": len(pos),
+                    "loss_streak": run.get("loss_streak", 0),
                 })
 
             all_signals.sort(key=lambda s: s.get("evaluated_at", ""), reverse=True)
@@ -241,6 +269,7 @@ class BotState:
                 "floating_pnl": round(agg_floating, 2),
                 "daily_pnl": round(agg_realized + agg_floating, 2),
                 "exposure": exposure,
+                "portfolio_heat_pct": self.portfolio_heat_pct,  # límite global (riesgo en uso lo añade el runner)
             }
 
 

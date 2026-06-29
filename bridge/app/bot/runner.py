@@ -14,7 +14,8 @@ from typing import Any
 from ..mt5_client import MT5Error, client
 from ..strategy import evaluate_strategy
 from . import executor
-from .guards import can_open, daily_limit_hit
+from .guards import can_open, circuit_breaker_tripped, daily_limit_hit
+from .portfolio import heat_would_exceed, position_risk
 from .state import bot_state, magic_for
 
 _DEFAULT_POLL = 10.0
@@ -54,6 +55,10 @@ class BotRunner:
         except Exception:  # noqa: BLE001
             pass
         config = {**config, "symbol": symbol}
+        # Portfolio heat es un límite GLOBAL de la cartera (Fase 7): el último arranque
+        # lo fija para todo el bot.
+        if "portfolio_heat_pct" in config:
+            bot_state.set_portfolio_heat(config.get("portfolio_heat_pct") or 0)
         from .state import new_run
         run = new_run(config, magic_for(sid))
         bot_state.upsert(run)
@@ -76,6 +81,9 @@ class BotRunner:
                 run["status"] = "running"
                 run["stop_reason"] = None
                 run["error"] = None
+                # Reanudar limpia los contadores del circuit breaker: si no, una
+                # estrategia pausada por racha se volvería a pausar al instante.
+                bot_state.reset_circuit_counters(run)
         self._apply(strategy_id, _r)
         self._ensure_thread()
 
@@ -129,7 +137,21 @@ class BotRunner:
                 floating_by_magic[magic] = sum(float(p.get("profit", 0.0)) for p in pos)
         except Exception:  # noqa: BLE001 - status nunca debe romper
             pass
-        return bot_state.snapshot(positions_by_magic, floating_by_magic)
+        snap = bot_state.snapshot(positions_by_magic, floating_by_magic)
+        # Heat actual = riesgo agregado de todas las posiciones bot / equity.
+        try:
+            equity = self._account_balance()
+            risk = 0.0
+            for positions in positions_by_magic.values():
+                for p in positions:
+                    prof = self._profile(p.get("symbol", ""))
+                    risk += position_risk(p.get("price_open"), p.get("sl"), p.get("volume", 0),
+                                          float(prof.get("pip", 0) or 0), float(prof.get("pip_value_per_lot", 0) or 0))
+            snap["portfolio_heat_used_pct"] = round(risk / equity * 100.0, 2) if equity > 0 else 0.0
+            snap["portfolio_risk_usd"] = round(risk, 2)
+        except Exception:  # noqa: BLE001
+            snap["portfolio_heat_used_pct"] = 0.0
+        return snap
 
     # -- loop -------------------------------------------------------------
     def _ensure_thread(self) -> None:
@@ -166,7 +188,60 @@ class BotRunner:
             run["status"] = "stopped"
             run["stop_reason"] = f"Límite de pérdida diaria alcanzado (PnL {daily:.2f})."
             return
+        # Circuit breakers (Fase 7): racha de pérdidas / drawdown desde el pico → PAUSA
+        # (no stop) para que el usuario revise y reanude (al reanudar se limpian).
+        max_losses = int(run.get("cb_max_losses", 0) or 0)
+        max_dd = float(run.get("cb_max_drawdown_pct", 0) or 0)
+        if max_losses or max_dd:
+            dd_pct = 0.0
+            if max_dd:
+                drop = float(run.get("peak_pnl", 0.0)) - float(run["realized_pnl_today"])
+                bal = self._account_balance()
+                dd_pct = (drop / bal * 100.0) if (bal > 0 and drop > 0) else 0.0
+            tripped, why = circuit_breaker_tripped(int(run.get("loss_streak", 0)), dd_pct, max_losses, max_dd)
+            if tripped:
+                run["status"] = "paused"
+                run["stop_reason"] = why
+                return
         self._evaluate(run)
+
+    def _account_balance(self) -> float:
+        try:
+            return float(client.account().get("balance", 0.0))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _profile(self, symbol: str) -> dict[str, Any]:
+        cache = getattr(self, "_profile_cache", None)
+        if cache is None:
+            cache = self._profile_cache = {}
+        if symbol not in cache:
+            try:
+                cache[symbol] = client.symbol_costs(symbol) or {}
+            except Exception:  # noqa: BLE001
+                cache[symbol] = {}
+        return cache[symbol]
+
+    def _heat_block(self, run: dict[str, Any]) -> tuple[bool, str]:
+        """¿Abrir superaría el límite GLOBAL de portfolio heat? Ante fallo del cálculo
+        NO bloquea (la gestión de riesgo no debe tumbar el bot)."""
+        try:
+            equity = self._account_balance()
+            if equity <= 0:
+                return False, ""
+            current = 0.0
+            for p in executor.bot_positions(client, magic=None):
+                prof = self._profile(p.get("symbol", ""))
+                current += position_risk(p.get("price_open"), p.get("sl"), p.get("volume", 0),
+                                         float(prof.get("pip", 0) or 0), float(prof.get("pip_value_per_lot", 0) or 0))
+            prof = self._profile(run["symbol"])
+            new_risk = float(run["sl_pips"]) * float(prof.get("pip_value_per_lot", 0) or 0) * float(run["lot"])
+            if heat_would_exceed(current, new_risk, equity, bot_state.portfolio_heat_pct):
+                used = (current + new_risk) / equity * 100.0
+                return True, f"Portfolio heat {used:.1f}% > límite {bot_state.portfolio_heat_pct:.1f}% — no se abre."
+            return False, ""
+        except Exception:  # noqa: BLE001
+            return False, ""
 
     def _pnl(self, run: dict[str, Any]) -> tuple[float, float]:
         floating = sum(float(p.get("profit", 0.0)) for p in executor.bot_positions(client, magic=run["magic"]))
@@ -230,6 +305,20 @@ class BotRunner:
 
             if not same:
                 ok, why = can_open(run["max_positions"], run["daily_loss_limit"], total_open, daily)
+                # Capa defensiva (Fase 6, OPCIONAL): no abrir en ventana de noticia de
+                # alto impacto (spreads se ensanchan, stops teóricos). Gestión de riesgo.
+                if ok and run.get("news_filter"):
+                    active, ev = self._news_block(run)
+                    if active:
+                        ok = False
+                        why = f"Ventana de noticia de alto impacto ({ev.get('title', 'evento')}) — pausa defensiva."
+                # Portfolio heat (Fase 7): no abrir si el riesgo agregado de TODAS las
+                # estrategias superaría el límite global.
+                if ok and bot_state.portfolio_heat_pct > 0:
+                    over, why_heat = self._heat_block(run)
+                    if over:
+                        ok = False
+                        why = why_heat
                 if ok:
                     try:
                         res = executor.open_market(client, run["symbol"], signal, run["lot"], run["sl_pips"], run["tp_pips"], magic=run["magic"], comment=run["comment"])
@@ -250,6 +339,22 @@ class BotRunner:
                     exec_reason = why
 
         bot_state.add_signal(run, signal, executed, exec_reason, indicators, candle_time=ctime)
+
+    def _news_block(self, run: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        """¿Estamos en ventana de noticia de alto impacto para el símbolo? Nunca debe
+        tumbar el bot: ante cualquier fallo del calendario, NO bloquea (devuelve False)."""
+        try:
+            import time
+
+            from ..econcal import news_window_active, symbol_currencies
+            from ..econcal.store import load_all, refresh
+            refresh()  # throttled (1h)
+            return news_window_active(
+                int(time.time()), load_all(), symbol_currencies(run["symbol"]),
+                int(run.get("news_window_min", 15) or 15),
+            )
+        except Exception:  # noqa: BLE001
+            return False, None
 
 
 bot_runner = BotRunner()
