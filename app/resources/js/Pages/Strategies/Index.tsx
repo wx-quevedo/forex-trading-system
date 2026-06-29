@@ -8,6 +8,12 @@ const TYPE_LABELS: Record<string, string> = {
     macd: 'MACD',
     bollinger: 'Bollinger Bands',
     combined: 'Combined',
+    supertrend: 'Supertrend',
+    ichimoku: 'Ichimoku Cloud',
+    donchian: 'Donchian Channels',
+    stochastic: 'Stochastic Oscillator',
+    cci: 'CCI',
+    psar: 'Parabolic SAR',
 };
 
 export default function Index({ strategies }: { strategies: Strategy[] }) {

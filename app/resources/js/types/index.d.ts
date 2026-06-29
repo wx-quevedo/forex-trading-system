@@ -157,6 +157,8 @@ export interface BacktestMetrics {
     max_drawdown_pct: number;
     sharpe: number;
     sortino: number;
+    calmar?: number | null;
+    expectancy?: number; // monetaria: PnL medio por trade
     max_win_streak: number;
     max_loss_streak: number;
     avg_win: number;
@@ -374,6 +376,9 @@ export interface ExploreMeta {
     default_workers: number;
     engine_version: number;
     cache: ExploreCacheStats;
+    atr_sl_choices: number[];
+    atr_tp_choices: number[];
+    atr_period_default: number;
 }
 
 export interface SavedSearch {
@@ -399,6 +404,8 @@ export interface Favorite {
     backtest_from: string | null;
     backtest_to: string | null;
     backtest_metrics: BacktestMetrics | null;
+    regime?: RegimeLabel | null;
+    regime_confidence?: number | null;
     created_at: string;
 }
 
@@ -449,14 +456,38 @@ export interface ExploreResultRow {
     win_rate: number; // fracción 0..1
     profit_factor: number | null;
     max_drawdown_pct: number;
+    sharpe?: number | null;
+    sortino?: number | null;
+    calmar?: number | null;
+    expectancy_r?: number | null;
     total_trades: number;
     blown: boolean;
+    sl_mode?: string;
+    regime?: RegimeLabel | null;
+    regime_confidence?: number | null;
     in_return: number;
     out_return: number;
     robustness: number;
     stars: number;
     verdict: 'inside' | 'edge' | 'outside';
     verdict_label: string;
+}
+
+// --- Régimen de mercado (Fase 3) ---
+export type RegimeLabel = 'TENDENCIA_ALCISTA' | 'TENDENCIA_BAJISTA' | 'RANGO' | 'VOLATIL';
+
+export interface RegimeInfo {
+    regime: RegimeLabel | null;
+    confidence: number;
+    adx: number | null;
+    efficiency_ratio: number | null;
+    directionality?: number | null;
+    net_change_pct?: number;
+    atr_pct: number | null;
+    vol_ratio?: number | null;
+    ma200_side: 'above' | 'below' | null;
+    ma_period?: number | null;
+    candles?: number;
 }
 
 export interface ExploreStatus {

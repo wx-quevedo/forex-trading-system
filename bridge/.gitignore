@@ -17,3 +17,8 @@ bot_state.json
 # IDE
 .vscode/
 .idea/
+
+# Cache SQLite del explorador (runtime, regenerable)
+explore_cache.db
+explore_cache.db-wal
+explore_cache.db-shm

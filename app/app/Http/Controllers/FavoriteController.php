@@ -40,6 +40,8 @@ class FavoriteController extends Controller
             'backtest_from' => ['nullable', 'date'],
             'backtest_to' => ['nullable', 'date'],
             'backtest_metrics' => ['nullable', 'array'],
+            'regime' => ['nullable', 'string', 'max:24'],
+            'regime_confidence' => ['nullable', 'numeric'],
         ]);
 
         $fav = Favorite::create([
@@ -56,6 +58,8 @@ class FavoriteController extends Controller
             'backtest_from' => $data['backtest_from'] ?? null,
             'backtest_to' => $data['backtest_to'] ?? null,
             'backtest_metrics' => $data['backtest_metrics'] ?? null,
+            'regime' => $data['regime'] ?? null,
+            'regime_confidence' => $data['regime_confidence'] ?? null,
         ]);
 
         return response()->json($fav);

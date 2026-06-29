@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ..backtest.engine import run_backtest
+from ..strategy.regime import classify_regime
 from ..optimize.engine import (
     MIN_TRADES,
     _grid,
@@ -47,8 +48,12 @@ _default_cache = ExploreCache(_CACHE_PATH)
 SL_CHOICES = [15, 20, 30, 50]
 TP_CHOICES = [30, 40, 60, 100]
 RISK_CHOICES = [0.5, 1.0, 2.0]
+# Multiplicadores de ATR (modo SL/TP adaptativo, Fase 1): SL=N×ATR, TP=M×ATR.
+ATR_SL_CHOICES = [1.5, 2.0, 3.0]
+ATR_TP_CHOICES = [2.0, 3.0, 4.0]
 SWEEP_TIMEFRAMES = ["M5", "M15", "H1", "H4"]
-EXPLORE_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined"]
+EXPLORE_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined",
+                 "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar"]
 MAX_CONFIGS = 200000  # máximo absoluto de seguridad (rechazo por encima)
 WARN_CONFIGS = 20000  # a partir de aquí el frontend pide confirmación (no bloquea)
 SPLIT = 0.7  # in-sample / out-of-sample
@@ -71,6 +76,17 @@ def estimate_configs(pairs: list[str], types: list[str], timeframes: list[str],
     return len(pairs) * len(timeframes) * len(sls) * len(tps) * len(risks) * per_group
 
 
+def expectancy_r(win_rate: float, sl: float, tp: float) -> float | None:
+    """Expectativa por operación en múltiplos de R (Fase 2).
+
+    win% × (TP/SL) − (1−win%). Clave para juzgar combinaciones con R/R desfavorable
+    (TP<SL) pero alto win rate: p.ej. win 60% SL50/TP40 (R/R 0.8) → +0.08 R (positiva
+    pese a R/R<1). None si SL es 0 (no hay ratio definido)."""
+    if not sl:
+        return None
+    return round(win_rate * (tp / sl) - (1.0 - win_rate), 3)
+
+
 def _row(pair: str, stype: str, tf: str, params: dict[str, Any], sl: float, tp: float,
          rp: float, full_m: dict[str, Any], in_ret: float, out_ret: float,
          total_tr: int) -> dict[str, Any]:
@@ -89,6 +105,10 @@ def _row(pair: str, stype: str, tf: str, params: dict[str, Any], sl: float, tp: 
         "win_rate": full_m["win_rate"],  # FRACCIÓN (0..1); el frontend multiplica ×100
         "profit_factor": full_m.get("profit_factor"),
         "max_drawdown_pct": full_m.get("max_drawdown_pct", 0.0),
+        "sharpe": full_m.get("sharpe"),       # ya anualizado en _compute_metrics
+        "sortino": full_m.get("sortino"),
+        "calmar": full_m.get("calmar"),
+        "expectancy_r": expectancy_r(full_m["win_rate"], sl, tp),
         "total_trades": full_m["total_trades"],
         "blown": bool(full_m.get("blown", False)),  # cuenta quebrada en el periodo
         "in_return": round(in_ret, 2),
@@ -103,7 +123,11 @@ def _compute_combo(pair: str, stype: str, tf: str, candles: list[dict[str, Any]]
                    cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Evalúa UNA combinación (full + in + out). Devuelve la fila PARCIAL (sin
     veredicto) o None si es inválida. Función pura (sin MT5, sin estado)."""
-    risk = {"sl_pips": sl, "tp_pips": tp, "risk_percent": rp}
+    # sl_mode/atr_period viajan en cfg (constantes de la búsqueda, como el capital).
+    risk = {
+        "sl_pips": sl, "tp_pips": tp, "risk_percent": rp,
+        "sl_mode": cfg.get("sl_mode", "fixed"), "atr_period": int(cfg.get("atr_period", 14)),
+    }
     try:
         full = run_backtest(stype, params, candles, symbol=pair, timeframe=tf, risk=risk, config=cfg)
         bt_in = run_backtest(stype, params, in_c, symbol=pair, timeframe=tf, risk=risk, config=cfg)
@@ -112,8 +136,10 @@ def _compute_combo(pair: str, stype: str, tf: str, candles: list[dict[str, Any]]
         return None
     m_in, m_out = bt_in["metrics"], bt_out["metrics"]
     total_tr = int(m_in["total_trades"]) + int(m_out["total_trades"])
-    return _row(pair, stype, tf, params, sl, tp, rp, full["metrics"],
-                float(m_in["return_pct"]), float(m_out["return_pct"]), total_tr)
+    row = _row(pair, stype, tf, params, sl, tp, rp, full["metrics"],
+               float(m_in["return_pct"]), float(m_out["return_pct"]), total_tr)
+    row["sl_mode"] = cfg.get("sl_mode", "fixed")
+    return row
 
 
 def _finalize_group(partials: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -404,6 +430,8 @@ class ExploreJob:
         tps = req["tp_choices"]
         risks = req["risk_choices"]
         capital = float(req.get("capital", 10000.0))
+        sl_mode = str(req.get("sl_mode") or "fixed").lower()
+        atr_period = int(req.get("atr_period") or 14)
 
         # 1) MT5 SOLO aquí: descargar todas las velas necesarias una vez (reuso).
         candle_cache, costs_cache = self._fetch_all_candles(pairs, tfs, req["date_from"], req["date_to"], client, run_id)
@@ -417,14 +445,22 @@ class ExploreJob:
         date_from, date_to = req["date_from"], req["date_to"]
         configs_per_group_set = sum(grid_size(t) for t in types) * len(sls) * len(tps) * len(risks)
 
+        regime_cache: dict[tuple[str, str], dict[str, Any]] = {}
         plans: list[dict[str, Any]] = []
         for pair in pairs:
-            cfg_base = {**costs_cache.get(pair, {}), "initial_balance": capital}
+            cfg_base = {**costs_cache.get(pair, {}), "initial_balance": capital,
+                        "sl_mode": sl_mode, "atr_period": atr_period}
             for tf in tfs:
                 candles = candle_cache.get((pair, tf), [])
                 if len(candles) < 120:  # grupo inviable → avanzar el progreso igual
                     self._add_done(run_id, configs_per_group_set)
                     continue
+                # Régimen del periodo: una vez por (par, tf), metadato para las filas.
+                if (pair, tf) not in regime_cache:
+                    try:
+                        regime_cache[(pair, tf)] = classify_regime(candles)
+                    except Exception:  # noqa: BLE001 - el régimen no debe abortar la búsqueda
+                        regime_cache[(pair, tf)] = {"regime": None, "confidence": 0.0}
                 for stype in types:
                     combos = _grid(stype, {})
                     for sl in sls:
@@ -432,7 +468,7 @@ class ExploreJob:
                             for rp in risks:
                                 cached, missing = [], list(combos)
                                 if self._use_cache:
-                                    keys = [make_cache_key(pair, stype, tf, p, sl, tp, rp, cfg_base, date_from, date_to) for p in combos]
+                                    keys = [make_cache_key(pair, stype, tf, p, sl, tp, rp, cfg_base, date_from, date_to, sl_mode, atr_period) for p in combos]
                                     hit_map = self._cache.get_many(keys)
                                     cached, missing = [], []
                                     for p, k in zip(combos, keys):
@@ -444,6 +480,7 @@ class ExploreJob:
                                     "from": date_from, "to": date_to,
                                     "cached": cached, "missing": missing,
                                     "grid": len(combos), "hits": len(cached), "misses": len(missing),
+                                    "regime": regime_cache.get((pair, tf), {}),
                                 })
 
         if not plans:
@@ -464,8 +501,10 @@ class ExploreJob:
         if self._use_cache and computed:
             pair, stype, tf, sl, tp, rp = plan["ctx"]
             capital = plan["cfg"].get("initial_balance")
+            sl_mode = plan["cfg"].get("sl_mode", "fixed")
+            atr_period = int(plan["cfg"].get("atr_period", 14))
             items = [
-                (make_cache_key(pair, stype, tf, p["params"], sl, tp, rp, plan["cfg"], plan["from"], plan["to"]),
+                (make_cache_key(pair, stype, tf, p["params"], sl, tp, rp, plan["cfg"], plan["from"], plan["to"], sl_mode, atr_period),
                  p, capital, plan["from"], plan["to"])
                 for p in computed
             ]
@@ -474,6 +513,12 @@ class ExploreJob:
             except Exception:  # noqa: BLE001 - un fallo de caché no debe abortar la búsqueda
                 pass
         rows = _finalize_group(plan["cached"] + computed)
+        # Estampa el régimen del periodo (metadato por par/tf) en cada fila —
+        # cacheadas y nuevas por igual; no se guarda en caché (es del periodo).
+        reg = plan.get("regime") or {}
+        for r in rows:
+            r["regime"] = reg.get("regime")
+            r["regime_confidence"] = reg.get("confidence")
         pair, stype, tf = plan["ctx"][0], plan["ctx"][1], plan["ctx"][2]
         self._consume(run_id, rows, compute_s, plan["grid"], f"{pair} · {tf} · {stype}", plan["hits"], plan["misses"])
 

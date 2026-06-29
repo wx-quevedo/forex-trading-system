@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from ..strategy import build_strategy, signal_series
+from ..strategy.indicators import atr as atr_series
 
 # Muchos backtests seguidos acumulan basura de pandas/numpy y, en Windows, pueden
 # provocar un access violation. Un gc.collect() periódico (cada N backtests) lo
@@ -62,12 +63,18 @@ def run_backtest(
         "swap_short_pts": 0.0,       # swap overnight en puntos (short), del símbolo
         "point": 0.0,                # tamaño del punto del símbolo (para el swap)
         "default_volume": 0.01,
+        "volume_min": 0.01,          # lote mínimo del símbolo (índices: 0.1)
+        "volume_step": 0.01,         # escalón de lote del símbolo
         **(config or {}),
     }
     risk = risk or {}
     sl_pips = _num(risk.get("sl_pips"))
     tp_pips = _num(risk.get("tp_pips"))
     risk_pct = _num(risk.get("risk_percent"))
+    # Modo de SL/TP: "fixed" (pips, como siempre) o "atr" (N×ATR, volatilidad real).
+    # En modo ATR, sl_pips/tp_pips se interpretan como MULTIPLICADORES (N, M).
+    sl_mode = str(risk.get("sl_mode") or "fixed").lower()
+    atr_period = int(_num(risk.get("atr_period")) or 14)
 
     # Tamaño del pip: SIEMPRE 10 puntos del símbolo (forex fraccional 5/3 dígitos,
     # metales, índices…). Así el oro (point 0.01 → pip 0.1) y demás se dimensionan
@@ -102,12 +109,23 @@ def run_backtest(
     lows = df["low"].to_numpy()
     times = df["time"].to_numpy()
     sig = signals.to_numpy()
+    # Serie ATR (precio) solo si el modo lo requiere → coste cero en modo fijo.
+    atr_arr = atr_series(df, atr_period).to_numpy() if sl_mode == "atr" else None
+
+    # Piso y escalón de lote del símbolo (forex 0.01/0.01; índices 0.1/0.1). Que el
+    # piso sea el real evita clavar todas las combinaciones en el mínimo.
+    vol_min = float(cfg["volume_min"]) or 0.01
+    vol_step = float(cfg["volume_step"]) or 0.01
+
+    def _round_lot(vol: float) -> float:
+        steps = round(vol / vol_step) if vol_step else vol
+        return max(vol_min, round(steps * vol_step, 8))
 
     def size_for(entry: float, sl: float | None) -> float:
         if risk_pct and sl is not None and abs(entry - sl) > 0:
             risk_amount = balance * risk_pct / 100.0
             vol = risk_amount / ((abs(entry - sl) / pip) * pip_value)
-            return max(0.01, round(vol, 2))
+            return _round_lot(vol)
         return float(cfg["default_volume"])
 
     def close_position(exit_price: float, exit_time: int, reason: str) -> None:
@@ -161,12 +179,22 @@ def run_backtest(
     def open_position(direction: str, i: int) -> None:
         nonlocal position
         entry = closes[i]  # entrada al precio medio; el spread se cobra como costo al cerrar
-        if direction == "buy":
-            sl = entry - sl_pips * pip if sl_pips else None
-            tp = entry + tp_pips * pip if tp_pips else None
+        # Distancia del SL/TP en PRECIO: fija (pips) o adaptativa (N×ATR de esta vela).
+        if sl_mode == "atr":
+            a = atr_arr[i] if atr_arr is not None else float("nan")
+            if not (a == a) or a <= 0:  # ATR aún sin definir (velas iniciales) → no operar
+                return
+            sl_dist = sl_pips * a if sl_pips else None  # sl_pips = multiplicador N
+            tp_dist = tp_pips * a if tp_pips else None  # tp_pips = multiplicador M
         else:
-            sl = entry + sl_pips * pip if sl_pips else None
-            tp = entry - tp_pips * pip if tp_pips else None
+            sl_dist = sl_pips * pip if sl_pips else None
+            tp_dist = tp_pips * pip if tp_pips else None
+        if direction == "buy":
+            sl = entry - sl_dist if sl_dist else None
+            tp = entry + tp_dist if tp_dist else None
+        else:
+            sl = entry + sl_dist if sl_dist else None
+            tp = entry - tp_dist if tp_dist else None
         position = {
             "dir": direction, "entry": entry, "entry_time": times[i],
             "sl": sl, "tp": tp, "volume": size_for(entry, sl),
@@ -221,6 +249,8 @@ def run_backtest(
             "symbol": symbol, "timeframe": timeframe, "type": type_,
             "candles": int(n),
             "from": int(times[0]), "to": int(times[-1]),
+            "sl_mode": sl_mode,
+            "atr_period": atr_period if sl_mode == "atr" else None,
         },
     }
 
@@ -285,6 +315,15 @@ def _compute_metrics(
         return_pct = -100.0
         max_dd_pct = -100.0
 
+    # Calmar = retorno ANUALIZADO / |max drawdown|. Anualizo por barras
+    # (bars_year / nº de barras). None si DD=0 (no medible) o sin equity.
+    calmar: float | None = None
+    if len(eq) > 1 and max_dd_pct < 0:
+        annual_return_pct = return_pct * bars_year / len(eq)
+        calmar = round(annual_return_pct / abs(max_dd_pct), 3)
+    # Expectativa MONETARIA: PnL medio por operación (valor esperado real por trade).
+    expectancy = round(net / total, 2) if total else 0.0
+
     return {
         "total_trades": total,
         "wins": wins,
@@ -303,6 +342,8 @@ def _compute_metrics(
         "max_drawdown_pct": round(max_dd_pct, 2),
         "sharpe": round(sharpe, 3),
         "sortino": round(sortino, 3),
+        "calmar": calmar,
+        "expectancy": expectancy,
         "max_win_streak": max_win_streak,
         "max_loss_streak": max_loss_streak,
         "avg_win": round(float(pnls[pnls > 0].mean()), 2) if wins else 0.0,

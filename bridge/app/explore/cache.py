@@ -24,7 +24,7 @@ from typing import Any
 # Versión de la LÓGICA de cálculo (backtest/costos/robustez/quiebra). Si cambia la
 # forma de calcular, INCREMENTAR esto: invalida la caché vieja (se recalcula con la
 # lógica nueva) en vez de servir resultados obsoletos.
-ENGINE_VERSION = 3  # v3: pip derivado del punto del símbolo (metales/índices)
+ENGINE_VERSION = 4  # v4: SL/TP adaptativo por ATR (modo fijo/atr en la clave)
 
 _COST_KEYS = ("spread_pips", "commission_per_lot", "swap_long_pts", "swap_short_pts", "point")
 
@@ -36,9 +36,10 @@ def params_key_of(params: dict[str, Any]) -> str:
 
 def make_cache_key(symbol: str, stype: str, tf: str, params: dict[str, Any],
                    sl: float, tp: float, rp: float, cfg: dict[str, Any],
-                   date_from: Any, date_to: Any) -> str:
+                   date_from: Any, date_to: Any,
+                   sl_mode: str = "fixed", atr_period: int = 14) -> str:
     """Hash SHA-1 de TODO lo que afecta el resultado (incl. engine_version, capital,
-    costos y periodo exacto). Cambiar cualquiera fuerza recálculo."""
+    costos, periodo exacto y modo de SL/TP fijo/ATR). Cambiar cualquiera fuerza recálculo."""
     payload = {
         "v": ENGINE_VERSION,
         "symbol": symbol,
@@ -48,6 +49,9 @@ def make_cache_key(symbol: str, stype: str, tf: str, params: dict[str, Any],
         "sl": sl,
         "tp": tp,
         "risk": rp,
+        "sl_mode": sl_mode,
+        # En modo ATR el periodo cambia el resultado; en fijo es irrelevante.
+        "atr_period": atr_period if sl_mode == "atr" else None,
         "capital": cfg.get("initial_balance"),
         "costs": {k: cfg.get(k) for k in _COST_KEYS},
         "from": str(date_from),

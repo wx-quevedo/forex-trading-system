@@ -1,6 +1,7 @@
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { fmtMoney, fmtNumber } from '@/lib/format';
+import { REGIME_META, matchVerdict } from '@/lib/regime';
 import type { Favorite } from '@/types';
 
 interface Props {
@@ -56,6 +57,13 @@ export default function Favorites({ favorites }: Props) {
                                     <span className="shrink-0 text-warning">★</span>
                                 </div>
                                 <div className="mt-1 font-mono text-[11px] text-text-secondary" title={paramsLabel(f.params)}>{paramsLabel(f.params)}</div>
+
+                                {f.regime && (() => { const mv = matchVerdict(f.type, f.regime); return (
+                                    <div className="mt-2 flex flex-wrap items-center gap-1">
+                                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${REGIME_META[f.regime].badge}`} title={`${REGIME_META[f.regime].help}${f.regime_confidence != null ? ` (confianza ${(f.regime_confidence * 100).toFixed(0)}%)` : ''}`}>{REGIME_META[f.regime].label}</span>
+                                        {mv.verdict && <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${mv.badge}`} title={mv.help}>{mv.label}</span>}
+                                    </div>
+                                ); })()}
 
                                 {f.backtest_from && (
                                     <div className="mt-2 rounded-md border border-border/60 bg-bg-elevated/50 px-2 py-1.5">

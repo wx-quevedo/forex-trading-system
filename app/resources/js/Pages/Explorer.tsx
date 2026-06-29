@@ -6,11 +6,13 @@ import ProgressModal from '@/Components/ProgressModal';
 import SystemStatsCard from '@/Components/SystemStatsCard';
 import InfoTooltip from '@/Components/InfoTooltip';
 import { fmtMoney, fmtNumber } from '@/lib/format';
+import { REGIME_META, matchVerdict, regimeLabel } from '@/lib/regime';
 
 const AZAR_HELP = 'Al probar miles de combinaciones, algunas parecerán ganadoras por pura suerte. Fíate de la robustez y del out-of-sample, no del retorno más alto. El reporte ordena por robustez por defecto.';
 const CAPITAL_HELP = 'Capital inicial del backtest. OJO: con capital bajo, el tamaño calculado por riesgo% cae al lote mínimo (0.01) y entonces 0.5/1/2% dan el MISMO resultado (no se distinguen). Usa un capital realista (p.ej. ≥ 2000) para que el riesgo% afecte de verdad.';
 const RISK_HELP = 'Riesgo por operación: define el tamaño de la posición (mayor riesgo → posición mayor → PnL y drawdown mayores). Si el capital es bajo, el tamaño se topa en el lote mínimo (0.01) y el riesgo% deja de diferenciar.';
 const INOUT_HELP = 'Retorno % del tramo. In-sample = tramo de entrenamiento (70%); Out-of-sample = tramo de validación que el barrido NO usó para elegir (30%). Lo bueno es que In y Out se PAREZCAN (consistencia). Si In es alto y Out bajo, la combinación está sobreajustada (overfit). La robustez mide justo esa consistencia.';
+const ATR_HELP = 'SL/TP por volatilidad real (ATR). Fijo: SL/TP en pips constantes. ATR: SL=N×ATR y TP=M×ATR, así el stop se adapta a la volatilidad de cada momento (más ancho cuando el mercado se mueve más). El riesgo en $ se mantiene constante (el tamaño se ajusta a la distancia del stop). Útil donde los stops fijos saltan por retrocesos violentos (p.ej. el oro).';
 import type { ExploreMeta, ExploreResultRow, ExploreStatus, SavedSearch, StrategySchemas } from '@/types';
 
 const fmtEta = (s: number | null): string => {
@@ -46,8 +48,18 @@ const _row_key = (r: ExploreResultRow) =>
 type SortKey =
     | 'pair' | 'type' | 'timeframe' | 'sl_pips' | 'tp_pips' | 'risk_percent'
     | 'capital_final' | 'costs' | 'return_pct' | 'net_pnl' | 'win_rate'
-    | 'profit_factor' | 'max_drawdown_pct' | 'total_trades' | 'in_return'
-    | 'out_return' | 'robustness';
+    | 'profit_factor' | 'max_drawdown_pct' | 'sharpe' | 'sortino' | 'calmar' | 'expectancy'
+    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime';
+
+// Fila con métricas derivadas (Calmar/Expectativa R) calculadas en el frontend.
+type AugRow = ExploreResultRow & { calmar: number | null; expectancy: number | null };
+
+const SHARPE_HELP = 'Sharpe ratio (anualizado): retorno por unidad de volatilidad TOTAL de la equity. >1 bueno, >2 excelente. Penaliza la inestabilidad. "—" en filas ya cacheadas hasta re-explorar.';
+const SORTINO_HELP = 'Sortino ratio (anualizado): como Sharpe pero solo penaliza la volatilidad a la BAJA (downside). Más justo para estrategias con subidas bruscas. "—" en filas cacheadas hasta re-explorar.';
+const CALMAR_HELP = 'Calmar = retorno ANUALIZADO / |máximo drawdown|. Mide retorno por unidad de “dolor” máximo. >1 sólido. Se calcula sobre el periodo del contexto; vacío si DD=0 o cuenta quebrada.';
+const EXPECTANCY_HELP = 'Expectativa en R = win% × (TP/SL) − (1−win%). Valor esperado por operación en múltiplos de riesgo. Puede ser POSITIVA con R/R<1 si el win rate es alto (p.ej. USDCAD SL50/TP40 al 60% → +0.08 R).';
+const REGIME_HELP = 'Régimen de mercado del periodo analizado (común a todas las combinaciones de ese par/timeframe): TENDENCIA (alcista/bajista), RANGO o VOLÁTIL. Es contexto, no cambia los trades.';
+const MATCH_HELP = 'Idoneidad estrategia↔régimen. Reversión (RSI, Bollinger) encaja en RANGO; tendencia (MA cross, MACD) encaja en TENDENCIA. Un MISMATCH explica por qué una estrategia "buena" falló (p.ej. reversión sobre el oro en tendencia).';
 
 export default function Explorer({ schemas, symbols, timeframes, types, meta, context, savedSearches }: Props) {
     // --- Selección del usuario ---
@@ -58,6 +70,16 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     const [sls, setSls] = useState<number[]>(meta.sl_choices);
     const [tps, setTps] = useState<number[]>(meta.tp_choices);
     const [risks, setRisks] = useState<number[]>(meta.risk_choices);
+    // Modo SL/TP (Fase 1): fijo (pips) o adaptativo por ATR (multiplicadores).
+    const [slMode, setSlMode] = useState<'fixed' | 'atr'>('fixed');
+    const [atrPeriod, setAtrPeriod] = useState<number>(meta.atr_period_default || 14);
+    const slChoices = slMode === 'atr' ? meta.atr_sl_choices : meta.sl_choices;
+    const tpChoices = slMode === 'atr' ? meta.atr_tp_choices : meta.tp_choices;
+    const changeMode = (m: 'fixed' | 'atr') => {
+        setSlMode(m);
+        setSls(m === 'atr' ? meta.atr_sl_choices : meta.sl_choices);
+        setTps(m === 'atr' ? meta.atr_tp_choices : meta.tp_choices);
+    };
     // Periodo y capital vienen de la MARCA GLOBAL (Ajustes › Contexto): fijos aquí.
     const period = { date_from: context.date_from, date_to: context.date_to };
     const capital = context.capital;
@@ -75,6 +97,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     const [fVerdict, setFVerdict] = useState<'all' | 'inside' | 'edge' | 'outside'>('all');
     const [fPair, setFPair] = useState('all');
     const [fType, setFType] = useState('all');
+    const [fMatch, setFMatch] = useState<'all' | 'MATCH' | 'MISMATCH'>('all');
     const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'robustness', dir: 'desc' });
     const [saveRow, setSaveRow] = useState<ExploreResultRow | null>(null);
     const [favAdded, setFavAdded] = useState<Set<string>>(new Set());
@@ -148,6 +171,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                 pairs, types: selTypes, timeframes: selTfs,
                 date_from: period.date_from, date_to: period.date_to, capital,
                 sl_choices: sls, tp_choices: tps, risk_choices: risks, workers,
+                sl_mode: slMode, atr_period: atrPeriod,
             });
             setStatus(data as ExploreStatus);
             startPoll();
@@ -165,13 +189,28 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     const uniquePairs = useMemo(() => [...new Set(results.map((r) => r.pair))].sort(), [results]);
     const uniqueTypes = useMemo(() => [...new Set(results.map((r) => r.type))].sort(), [results]);
 
+    // Días del periodo del contexto (para anualizar Calmar).
+    const periodDays = useMemo(
+        () => Math.max(1, Math.round((+new Date(context.date_to) - +new Date(context.date_from)) / 86400000)),
+        [context.date_from, context.date_to],
+    );
+
+    // Aumenta cada fila con Calmar y Expectativa R DERIVADAS (presentes incluso en
+    // filas cacheadas que no las traen del motor). Sharpe/Sortino vienen del motor.
     const view = useMemo(() => {
-        let rows = results;
+        const aug = (r: ExploreResultRow): AugRow => {
+            const dd = Math.abs(r.max_drawdown_pct);
+            const calmar = (r.blown || dd === 0) ? null : (r.return_pct * 365 / periodDays) / dd;
+            const expectancy = r.expectancy_r ?? (r.sl_pips > 0 ? r.win_rate * (r.tp_pips / r.sl_pips) - (1 - r.win_rate) : null);
+            return { ...r, calmar, expectancy };
+        };
+        let rows = results.map(aug);
         if (fVerdict !== 'all') rows = rows.filter((r) => r.verdict === fVerdict);
         if (fPair !== 'all') rows = rows.filter((r) => r.pair === fPair);
         if (fType !== 'all') rows = rows.filter((r) => r.type === fType);
+        if (fMatch !== 'all') rows = rows.filter((r) => matchVerdict(r.type, r.regime).verdict === fMatch);
         const { key, dir } = sort;
-        const num = (v: number | null) => (v == null ? -Infinity : v);
+        const num = (v: number | null | undefined) => (v == null ? -Infinity : v);
         return [...rows].sort((a, b) => {
             const av = a[key]; const bv = b[key];
             let cmp: number;
@@ -179,20 +218,20 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             else cmp = num(av as number) - num(bv as number);
             return dir === 'asc' ? cmp : -cmp;
         });
-    }, [results, fVerdict, fPair, fType, sort]);
+    }, [results, fVerdict, fPair, fType, fMatch, sort, periodDays]);
 
     // Paginación: opera sobre el conjunto YA filtrado y ordenado (view).
     const pageCount = Math.max(1, Math.ceil(view.length / pageSize));
     const safePage = Math.min(page, pageCount);
     const pageStart = (safePage - 1) * pageSize;
     const pageRows = view.slice(pageStart, pageStart + pageSize);
-    useEffect(() => { setPage(1); }, [fVerdict, fPair, fType, sort, pageSize, results]);
+    useEffect(() => { setPage(1); }, [fVerdict, fPair, fType, fMatch, sort, pageSize, results]);
 
     const toggleSort = (key: SortKey) =>
         setSort((p) => (p.key === key ? { key, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
 
     // Añade una combinación a Favoritos (con el contexto = backtest de referencia).
-    const addFavorite = async (r: ExploreResultRow) => {
+    const addFavorite = async (r: AugRow) => {
         try {
             await window.axios.post('/favorites', {
                 name: `${schemas[r.type]?.label ?? r.type} ${r.pair} ${r.timeframe}`,
@@ -204,7 +243,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                     return_pct: r.return_pct, net_pnl: r.net_pnl, win_rate: r.win_rate,
                     profit_factor: r.profit_factor, max_drawdown_pct: r.max_drawdown_pct,
                     total_trades: r.total_trades, total_costs: r.costs, final_balance: r.capital_final,
+                    sharpe: r.sharpe ?? null, sortino: r.sortino ?? null, calmar: r.calmar ?? null,
                 },
+                regime: r.regime ?? null, regime_confidence: r.regime_confidence ?? null,
             });
             setFavAdded((prev) => new Set(prev).add(_row_key(r)));
         } catch {
@@ -224,13 +265,17 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     };
 
     const exportCsv = () => {
-        const cols: [string, (r: ExploreResultRow) => string | number][] = [
+        const cols: [string, (r: AugRow) => string | number][] = [
             ['Par', (r) => r.pair], ['Tipo', (r) => r.type], ['Timeframe', (r) => r.timeframe],
             ['Parametros', (r) => paramsLabel(r.params)], ['SL', (r) => r.sl_pips], ['TP', (r) => r.tp_pips],
             ['Riesgo%', (r) => r.risk_percent], ['CapitalFinal', (r) => r.capital_final], ['Costos', (r) => r.costs],
             ['RetornoNeto%', (r) => r.return_pct], ['PnLNeto', (r) => r.net_pnl], ['WinRate%', (r) => (r.win_rate * 100).toFixed(1)],
-            ['ProfitFactor', (r) => r.profit_factor ?? ''], ['MaxDD%', (r) => r.max_drawdown_pct], ['Trades', (r) => r.total_trades],
+            ['ProfitFactor', (r) => r.profit_factor ?? ''], ['MaxDD%', (r) => r.max_drawdown_pct],
+            ['Sharpe', (r) => r.sharpe ?? ''], ['Sortino', (r) => r.sortino ?? ''],
+            ['Calmar', (r) => (r.calmar != null ? r.calmar.toFixed(2) : '')], ['ExpectativaR', (r) => (r.expectancy != null ? r.expectancy.toFixed(3) : '')],
+            ['Trades', (r) => r.total_trades],
             ['InSample%', (r) => r.in_return], ['OutSample%', (r) => r.out_return], ['Robustez', (r) => r.robustness],
+            ['Regimen', (r) => regimeLabel(r.regime)], ['Idoneidad', (r) => matchVerdict(r.type, r.regime).label],
             ['Veredicto', (r) => r.verdict],
         ];
         const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
@@ -330,9 +375,27 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                     </div>
                 </div>
 
+                {/* Modo SL/TP: fijo (pips) o adaptativo por ATR (Fase 1) */}
+                <div className="flex flex-wrap items-center gap-3">
+                    <SectionLabel>Modo SL/TP <InfoTooltip text={ATR_HELP} /></SectionLabel>
+                    <div className="flex gap-1.5">
+                        {(['fixed', 'atr'] as const).map((m) => (
+                            <button key={m} type="button" onClick={() => changeMode(m)}
+                                className={`rounded-md border px-3 py-1 text-xs ${slMode === m ? 'border-accent bg-accent/15 text-text-primary' : 'border-border text-text-secondary hover:text-text-primary'}`}>
+                                {m === 'fixed' ? 'Fijo (pips)' : 'ATR (volatilidad)'}
+                            </button>
+                        ))}
+                    </div>
+                    {slMode === 'atr' && (
+                        <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                            Periodo ATR
+                            <input type="number" min={2} max={200} value={atrPeriod} onChange={(e) => setAtrPeriod(Math.max(2, Number(e.target.value)))} className="w-20 rounded-md border border-border bg-bg-elevated px-2 py-1 font-mono text-xs text-text-primary" />
+                        </label>
+                    )}
+                </div>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    <div><SectionLabel>SL (pips)</SectionLabel><ChipToggle options={meta.sl_choices.map((v) => ({ value: v, label: String(v) }))} selected={sls} onToggle={(v) => toggle(sls, setSls, v as number)} /></div>
-                    <div><SectionLabel>TP (pips)</SectionLabel><ChipToggle options={meta.tp_choices.map((v) => ({ value: v, label: String(v) }))} selected={tps} onToggle={(v) => toggle(tps, setTps, v as number)} /></div>
+                    <div><SectionLabel>{slMode === 'atr' ? 'SL (×ATR)' : 'SL (pips)'}</SectionLabel><ChipToggle options={slChoices.map((v) => ({ value: v, label: String(v) }))} selected={sls} onToggle={(v) => toggle(sls, setSls, v as number)} /></div>
+                    <div><SectionLabel>{slMode === 'atr' ? 'TP (×ATR)' : 'TP (pips)'}</SectionLabel><ChipToggle options={tpChoices.map((v) => ({ value: v, label: String(v) }))} selected={tps} onToggle={(v) => toggle(tps, setTps, v as number)} /></div>
                     <div><SectionLabel>Riesgo % <InfoTooltip text={RISK_HELP} /></SectionLabel><ChipToggle options={meta.risk_choices.map((v) => ({ value: v, label: String(v) }))} selected={risks} onToggle={(v) => toggle(risks, setRisks, v as number)} /></div>
                 </div>
 
@@ -403,6 +466,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                             <FilterSelect label="Veredicto" value={fVerdict} onChange={(v) => setFVerdict(v as typeof fVerdict)} options={[['all', 'Todos'], ['inside', 'DENTRO'], ['edge', 'Límite'], ['outside', 'FUERA']]} />
                             <FilterSelect label="Par" value={fPair} onChange={setFPair} options={[['all', 'Todos'], ...uniquePairs.map((p) => [p, p] as [string, string])]} />
                             <FilterSelect label="Tipo" value={fType} onChange={setFType} options={[['all', 'Todos'], ...uniqueTypes.map((t) => [t, schemas[t]?.label ?? t] as [string, string])]} />
+                            <FilterSelect label="Idoneidad" value={fMatch} onChange={(v) => setFMatch(v as typeof fMatch)} options={[['all', 'Todas'], ['MATCH', 'Solo MATCH'], ['MISMATCH', 'Solo MISMATCH']]} />
                             <input value={savedName} onChange={(e) => setSavedName(e.target.value)} placeholder="Nombre…"
                                 className="w-36 rounded-md border border-border bg-bg-elevated px-2 py-1.5 text-sm text-text-primary" />
                             <button type="button" onClick={saveSearch} className="rounded-md border border-accent px-3 py-1.5 text-sm text-accent hover:bg-accent/10">Guardar esta búsqueda</button>
@@ -436,10 +500,16 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                     <Th k="win_rate" label="Win%" right s={sort} on={toggleSort} />
                                     <Th k="profit_factor" label="PF" right s={sort} on={toggleSort} />
                                     <Th k="max_drawdown_pct" label="Max DD" right s={sort} on={toggleSort} />
+                                    <Th k="sharpe" label="Sharpe" right s={sort} on={toggleSort} help={SHARPE_HELP} />
+                                    <Th k="sortino" label="Sortino" right s={sort} on={toggleSort} help={SORTINO_HELP} />
+                                    <Th k="calmar" label="Calmar" right s={sort} on={toggleSort} help={CALMAR_HELP} />
+                                    <Th k="expectancy" label="Exp. R" right s={sort} on={toggleSort} help={EXPECTANCY_HELP} />
                                     <Th k="total_trades" label="Ops" right s={sort} on={toggleSort} />
                                     <Th k="in_return" label="Ret. In" right s={sort} on={toggleSort} help={INOUT_HELP} />
                                     <Th k="out_return" label="Ret. Out" right s={sort} on={toggleSort} help={INOUT_HELP} />
                                     <Th k="robustness" label="Robustez" s={sort} on={toggleSort} />
+                                    <Th k="regime" label="Régimen" s={sort} on={toggleSort} help={REGIME_HELP} />
+                                    <th className="px-3 py-2 font-medium"><span className="inline-flex items-center gap-1">Idoneidad<InfoTooltip text={MATCH_HELP} /></span></th>
                                     <th className="px-3 py-2 font-medium">Veredicto</th>
                                     <th className="px-3 py-2" />
                                 </tr>
@@ -464,10 +534,24 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{(r.win_rate * 100).toFixed(1)}%</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.profit_factor != null ? fmtNumber(r.profit_factor) : '—'}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs text-loss">{r.max_drawdown_pct}%</td>
+                                            <td className="px-3 py-1.5 text-right font-mono text-xs">{r.sharpe != null ? fmtNumber(r.sharpe) : '—'}</td>
+                                            <td className="px-3 py-1.5 text-right font-mono text-xs">{r.sortino != null ? fmtNumber(r.sortino) : '—'}</td>
+                                            <td className="px-3 py-1.5 text-right font-mono text-xs">{r.calmar != null ? r.calmar.toFixed(2) : '—'}</td>
+                                            <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.expectancy == null ? '' : r.expectancy >= 0 ? 'text-profit' : 'text-loss'}`}>{r.expectancy != null ? `${r.expectancy >= 0 ? '+' : ''}${r.expectancy.toFixed(2)}` : '—'}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{r.total_trades}</td>
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.in_return >= 0 ? 'text-profit' : 'text-loss'}`}>{r.in_return}%</td>
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.out_return >= 0 ? 'text-profit' : 'text-loss'}`}>{r.out_return}%</td>
                                             <td className="px-3 py-1.5 font-mono text-xs text-warning" title={`robustez ${r.robustness}`}>{stars(r.stars)}</td>
+                                            <td className="px-3 py-1.5">
+                                                {r.regime
+                                                    ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${REGIME_META[r.regime].badge}`} title={`${REGIME_META[r.regime].help}${r.regime_confidence != null ? ` (confianza ${(r.regime_confidence * 100).toFixed(0)}%)` : ''}`}>{REGIME_META[r.regime].label}</span>
+                                                    : <span className="text-[10px] text-text-secondary">—</span>}
+                                            </td>
+                                            <td className="px-3 py-1.5">
+                                                {(() => { const m = matchVerdict(r.type, r.regime); return m.verdict
+                                                    ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${m.badge}`} title={m.help}>{m.label}</span>
+                                                    : <span className="text-[10px] text-text-secondary">—</span>; })()}
+                                            </td>
                                             <td className="px-3 py-1.5">
                                                 {r.blown
                                                     ? <span className="rounded bg-loss/20 px-1.5 py-0.5 text-[10px] font-semibold text-loss" title="La cuenta perdió todo el capital (quiebra). No es operable.">Cuenta quebrada</span>

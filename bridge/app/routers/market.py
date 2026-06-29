@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..auth import require_api_key
 from ..mt5_client import client
+from ..strategy.regime import classify_regime
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
@@ -28,6 +29,18 @@ async def get_candles(
     count: int | None = Query(default=None, ge=1, le=50000, description="Últimas N velas (alt. a 'from')."),
 ):
     return client.candles(symbol, timeframe, date_from, date_to, count)
+
+
+@router.get("/market/regime/{symbol}", summary="Régimen de mercado del periodo (tendencia/rango/volátil)")
+async def get_regime(
+    symbol: str,
+    timeframe: str = Query("H1"),
+    date_from: datetime | None = Query(default=None, alias="from"),
+    date_to: datetime | None = Query(default=None, alias="to"),
+    count: int | None = Query(default=None, ge=30, le=50000),
+):
+    candles = client.candles(symbol, timeframe, date_from, date_to, count)
+    return classify_regime(candles)
 
 
 @router.get("/symbol/{symbol}", summary="symbol_info() — info del símbolo (digits, etc.)")

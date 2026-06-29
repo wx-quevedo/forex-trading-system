@@ -58,6 +58,45 @@ def _grid(strategy_type: str, base: dict[str, Any]) -> list[dict[str, Any]]:
             for tp in (30, 50, 100, 200)
             for lg in ("and", "or")
         ]
+    # --- Fase 4 (rangos modestos para no disparar el combinatorio) ---
+    if t == "supertrend":
+        return [
+            {"period": p, "multiplier": m}
+            for p in (7, 10, 14)
+            for m in (2.0, 3.0, 4.0)
+        ]
+    if t == "ichimoku":
+        return [
+            {"tenkan": tk, "kijun": kj, "senkou_b": sb}
+            for tk in (9, 12)
+            for kj in (26, 52)
+            for sb in (52, 104)
+            if tk < kj < sb
+        ]
+    if t == "donchian":
+        return [
+            {"period": p, "atr_buffer": b, "atr_period": 14}
+            for p in (10, 20, 55)
+            for b in (0.0, 0.5)
+        ]
+    if t == "stochastic":
+        return [
+            {"k_period": k, "d_period": 3, "smooth": 3, "oversold": o, "overbought": 100 - o}
+            for k in (14, 21)
+            for o in (20, 25)
+        ]
+    if t == "cci":
+        return [
+            {"period": p, "threshold": th}
+            for p in (14, 20, 40)
+            for th in (100, 150)
+        ]
+    if t == "psar":
+        return [
+            {"af_step": s, "af_max": mx}
+            for s in (0.02, 0.04)
+            for mx in (0.2, 0.3)
+        ]
     return [dict(base)]
 
 

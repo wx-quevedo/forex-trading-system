@@ -133,4 +133,90 @@ class BotTest extends TestCase
             ->assertJsonPath('telegram.events.trade_opened', false)
             ->assertJsonPath('telegram.events.panic', true);
     }
+
+    // --- Fase 8: cargar favoritos al bot --------------------------------
+    private function favorite(string $pair = 'USDCAD#', string $type = 'bollinger'): \App\Models\Favorite
+    {
+        return \App\Models\Favorite::create([
+            'name' => "$type $pair H4", 'source' => 'explorer', 'pair' => $pair, 'type' => $type, 'timeframe' => 'H4',
+            'params' => ['period' => 20, 'std_dev' => 2.0],
+            'sl_pips' => 50, 'tp_pips' => 40, 'risk_percent' => 1, 'capital' => 10000,
+            'backtest_from' => '2025-01-01', 'backtest_to' => '2025-12-31',
+            'backtest_metrics' => ['return_pct' => 12.0, 'win_rate' => 0.6],
+        ]);
+    }
+
+    public function test_load_favorite_materializes_strategy_and_starts(): void
+    {
+        $fav = $this->favorite();
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) {
+            $m->shouldReceive('botStart')->once()
+                ->with(\Mockery::on(fn ($cfg) => $cfg['strategy_type'] === 'bollinger'
+                    && $cfg['symbol'] === 'USDCAD#'
+                    && $cfg['timeframe'] === 'H4'
+                    && $cfg['lot'] === 0.04
+                    && $cfg['sl_pips'] === 50.0
+                    && $cfg['tp_pips'] === 40.0))
+                ->andReturn(['status' => 'running']);
+            $m->shouldReceive('botStatus')->andReturn(['status' => 'running', 'runs' => []]);
+        });
+
+        $this->actingAs(User::factory()->create())
+            ->postJson('/bot/load-favorites', [
+                'favorites' => [['favorite_id' => $fav->id, 'lot' => 0.04]],
+                'daily_loss_limit' => 100, 'max_positions' => 1,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status.status', 'running');
+
+        // Estrategia materializada con traza al favorito y parámetros correctos.
+        $this->assertDatabaseHas('strategies', ['favorite_id' => $fav->id, 'pair' => 'USDCAD#', 'timeframe' => 'H4', 'name' => '★ ' . $fav->name]);
+        $strategy = Strategy::where('favorite_id', $fav->id)->first();
+        $this->assertSame('bollinger', $strategy->parameters['type']);
+        $this->assertSame(50, $strategy->parameters['risk']['sl_pips']);
+        $this->assertDatabaseHas('bot_runs', ['strategy_id' => $strategy->id, 'status' => 'running']);
+    }
+
+    public function test_load_favorite_twice_does_not_duplicate_strategy(): void
+    {
+        $fav = $this->favorite();
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) {
+            $m->shouldReceive('botStart')->twice()->andReturn(['status' => 'running']);
+            $m->shouldReceive('botStatus')->andReturn(['status' => 'running', 'runs' => []]);
+        });
+        $user = User::factory()->create();
+        $payload = ['favorites' => [['favorite_id' => $fav->id, 'lot' => 0.02]], 'daily_loss_limit' => 100, 'max_positions' => 1];
+
+        $this->actingAs($user)->postJson('/bot/load-favorites', $payload)->assertOk();
+        $this->actingAs($user)->postJson('/bot/load-favorites', $payload)->assertOk();
+
+        $this->assertSame(1, Strategy::where('favorite_id', $fav->id)->count());
+    }
+
+    public function test_load_multiple_favorites_starts_each(): void
+    {
+        $f1 = $this->favorite('USDCAD#', 'bollinger');
+        $f2 = $this->favorite('EURUSD#', 'rsi');
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) {
+            $m->shouldReceive('botStart')->twice()->andReturn(['status' => 'running']);
+            $m->shouldReceive('botStatus')->andReturn(['status' => 'running', 'runs' => []]);
+        });
+
+        $this->actingAs(User::factory()->create())
+            ->postJson('/bot/load-favorites', [
+                'favorites' => [['favorite_id' => $f1->id, 'lot' => 0.02], ['favorite_id' => $f2->id, 'lot' => 0.03]],
+                'daily_loss_limit' => 100, 'max_positions' => 1,
+            ])
+            ->assertOk();
+
+        $this->assertSame(2, Strategy::whereNotNull('favorite_id')->count());
+        $this->assertSame(2, BotRun::where('status', 'running')->count());
+    }
+
+    public function test_load_favorites_requires_at_least_one(): void
+    {
+        $this->actingAs(User::factory()->create())
+            ->postJson('/bot/load-favorites', ['favorites' => [], 'daily_loss_limit' => 100, 'max_positions' => 1])
+            ->assertStatus(422);
+    }
 }

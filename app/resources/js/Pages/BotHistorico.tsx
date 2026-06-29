@@ -7,7 +7,10 @@ import ProgressModal from '@/Components/ProgressModal';
 import InfoTooltip from '@/Components/InfoTooltip';
 import { fmtMoney, fmtNumber } from '@/lib/format';
 import { DISPLAY_TZ_OFFSET_SECONDS } from '@/lib/tz';
-import type { BacktestMetrics, BacktestTrade, Candle, EquityPoint, Favorite } from '@/types';
+import { REGIME_META, matchVerdict } from '@/lib/regime';
+import type { BacktestMetrics, BacktestTrade, Candle, EquityPoint, Favorite, RegimeLabel } from '@/types';
+
+const REGIME_WF_HELP = 'Régimen del periodo de BACKTEST (snapshot del favorito) vs el régimen del periodo de OPERACIÓN. Si el régimen cambió (p.ej. de rango a tendencia), una estrategia de reversión puede degradarse aunque su lógica sea correcta: es un MISMATCH sobrevenido.';
 
 interface Props {
     favorites: Favorite[];
@@ -263,12 +266,26 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
 
 function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult; opDays: number; op: { date_from: string; date_to: string } }) {
     const [showTrades, setShowTrades] = useState(false);
+    // Régimen del periodo de OPERACIÓN (el del backtest viene en el favorito).
+    const [opRegime, setOpRegime] = useState<RegimeLabel | null | undefined>(undefined);
+    useEffect(() => {
+        let alive = true;
+        window.axios.get(`/api/market/regime/${encodeURIComponent(fav.pair)}`, { params: { timeframe: fav.timeframe, from: op.date_from, to: op.date_to } })
+            .then(({ data }) => { if (alive) setOpRegime(data?.regime ?? null); })
+            .catch(() => { if (alive) setOpRegime(null); });
+        return () => { alive = false; };
+    }, [fav.pair, fav.timeframe, op.date_from, op.date_to]);
     if (res.error) {
         return <div className="rounded-lg border border-loss/40 bg-bg-surface p-4 text-sm text-loss">{fav.pair}·{fav.timeframe}: {res.error}</div>;
     }
     const A = res.metrics!;
     const B = fav.backtest_metrics;
     const bDays = days(fav.backtest_from, fav.backtest_to);
+    // Expectativa en R desde win% y R/R (TP/SL) del favorito; comparable A vs B.
+    const expR = (win: number | null | undefined) =>
+        win != null && fav.sl_pips ? win * ((fav.tp_pips ?? 0) / fav.sl_pips) - (1 - win) : null;
+    const fmtR = (v: number | null) => (v != null ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}R` : '—');
+    const fmtN = (v: number | null | undefined) => (v != null ? fmtNumber(Number(v)) : '—');
     const annA = annualize(A.return_pct, opDays);
     const annB = B ? annualize(Number(B.return_pct), bDays) : 0;
     const v = verdictOf(annA, annB, !!A.blown);
@@ -288,6 +305,24 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
                 </span>
             </div>
 
+            {/* Régimen: backtest (snapshot del favorito) vs operación */}
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="inline-flex items-center gap-1 text-text-secondary">Régimen<InfoTooltip text={REGIME_WF_HELP} /></span>
+                <span className="text-text-secondary">backtest:</span>
+                {fav.regime
+                    ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${REGIME_META[fav.regime].badge}`} title={REGIME_META[fav.regime].help}>{REGIME_META[fav.regime].label}</span>
+                    : <span className="text-text-secondary">—</span>}
+                <span className="text-text-secondary">· operación:</span>
+                {opRegime === undefined
+                    ? <span className="text-text-secondary">…</span>
+                    : opRegime
+                        ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${REGIME_META[opRegime].badge}`} title={REGIME_META[opRegime].help}>{REGIME_META[opRegime].label}</span>
+                        : <span className="text-text-secondary">—</span>}
+                {(() => { const mv = matchVerdict(fav.type, opRegime ?? null); return mv.verdict
+                    ? <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${mv.badge}`} title={mv.help}>{mv.label}</span>
+                    : null; })()}
+            </div>
+
             {/* Tabla A / B / Δ */}
             <table className="w-full text-sm">
                 <thead>
@@ -304,6 +339,10 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
                     <Row label="Win rate" b={B ? `${(Number(B.win_rate) * 100).toFixed(0)}%` : '—'} a={`${(A.win_rate * 100).toFixed(0)}%`} d={B ? `${((A.win_rate - Number(B.win_rate)) * 100).toFixed(0)}pp` : '—'} good />
                     <Row label="Profit factor" b={B && B.profit_factor != null ? fmtNumber(Number(B.profit_factor)) : '—'} a={A.profit_factor != null ? fmtNumber(A.profit_factor) : '—'} d="—" good />
                     <Row label="Max drawdown %" b={B ? `${B.max_drawdown_pct}%` : '—'} a={`${A.max_drawdown_pct}%`} d={B ? `${(A.max_drawdown_pct - Number(B.max_drawdown_pct)).toFixed(1)}` : '—'} good={false} />
+                    <Row label="Sharpe" b={fmtN(B?.sharpe)} a={fmtN(A.sharpe)} d="—" good={A.sharpe >= 0} />
+                    <Row label="Sortino" b={fmtN(B?.sortino)} a={fmtN(A.sortino)} d="—" good={A.sortino >= 0} />
+                    <Row label="Calmar" b={fmtN(B?.calmar)} a={fmtN(A.calmar)} d="—" good={(A.calmar ?? 0) >= 0} />
+                    <Row label="Expectativa (R)" b={fmtR(expR(B ? Number(B.win_rate) : null))} a={fmtR(expR(A.win_rate))} d="—" good={(expR(A.win_rate) ?? 0) >= 0} />
                     <Row label="PnL neto" b={B ? fmtMoney(Number(B.net_pnl)) : '—'} a={fmtMoney(A.net_pnl)} d="" good={A.net_pnl >= 0} />
                     <Row label="Capital final" b={B ? fmtMoney(Number(B.final_balance)) : '—'} a={fmtMoney(A.final_balance)} d="" good={A.final_balance >= fav.capital} />
                     <Row label="Operaciones" b={B ? String(B.total_trades) : '—'} a={String(A.total_trades)} d="" good />

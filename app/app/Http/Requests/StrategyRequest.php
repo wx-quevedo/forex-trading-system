@@ -7,7 +7,8 @@ use Illuminate\Validation\Rule;
 
 class StrategyRequest extends FormRequest
 {
-    public const TYPES = ['ma_cross', 'rsi', 'macd', 'bollinger', 'combined'];
+    public const TYPES = ['ma_cross', 'rsi', 'macd', 'bollinger', 'combined',
+        'supertrend', 'ichimoku', 'donchian', 'stochastic', 'cci', 'psar'];
     public const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1'];
 
     public function authorize(): bool

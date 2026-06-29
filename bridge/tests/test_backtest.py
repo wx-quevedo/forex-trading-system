@@ -76,6 +76,71 @@ def test_jpy_pip_size():
     assert pip_size("EURUSD") == 0.0001
 
 
+# --- Fase 1: SL/TP adaptativo por ATR -------------------------------------
+def _vol_candles(n=300):
+    """Velas con RANGO variable → ATR variable (para probar SL adaptativo)."""
+    x = np.linspace(0, 6 * np.pi, n)
+    close = 1.10 + 0.02 * np.sin(x)
+    rng = 0.0008 * (1 + 0.6 * np.sin(x / 3.0))  # high-low variable en el tiempo
+    out, t = [], 1_700_000_000
+    for i in range(n):
+        c, r = float(close[i]), float(rng[i])
+        out.append({"time": t + i * 3600, "open": c, "high": c + r, "low": c - r, "close": c, "tick_volume": 100})
+    return out
+
+
+def test_atr_indicator():
+    from app.strategy.indicators import atr
+    import pandas as pd
+    # TR constante = 1.0 (high-low=1, sin gaps) → ATR converge a 1.0; NaN antes del periodo.
+    df = pd.DataFrame([{"high": 100.5, "low": 99.5, "close": 100.0} for _ in range(40)])
+    a = atr(df, 14)
+    assert a.iloc[:13].isna().all()       # sin definir hasta tener 14 velas
+    assert abs(float(a.iloc[-1]) - 1.0) < 1e-6
+
+
+def test_atr_mode_keeps_dollar_risk_constant_with_variable_sl():
+    """Modo ATR: el SL varía por vela, pero el riesgo en $ por operación se mantiene
+    (el sizing usa la distancia real al SL). Capital alto evita el lote mínimo."""
+    res = run_backtest(
+        "ma_cross",
+        {"ma_type": "ema", "fast_period": 5, "slow_period": 20},
+        _vol_candles(300),
+        symbol="EURUSD",
+        timeframe="H1",
+        risk={"sl_mode": "atr", "atr_period": 14, "sl_pips": 2.0, "tp_pips": 3.0, "risk_percent": 1.0},
+        config={"initial_balance": 1_000_000.0, "spread_pips": 0.0},
+    )
+    assert res["meta"]["sl_mode"] == "atr"
+    assert res["meta"]["atr_period"] == 14
+    trades = res["trades"]
+    assert len(trades) >= 3
+
+    pip = 0.0001  # EURUSD sin point en config
+    dists = set()
+    balance_before = 1_000_000.0
+    for t in trades:
+        dist = abs(t["entry_price"] - t["sl"])
+        dists.add(round(dist, 6))
+        implied_risk = (dist / pip) * 10.0 * t["volume"]   # vol·distancia·valor_pip
+        expected = balance_before * 0.01                    # riesgo% del capital al entrar
+        assert abs(implied_risk - expected) / expected < 0.05, "el riesgo en $ no se mantuvo constante"
+        balance_before = t["balance"]
+    assert len(dists) > 1, "el SL debería variar por ATR (no ser fijo)"
+
+
+def test_fixed_mode_unchanged_by_atr_branch():
+    """Regresión: el modo fijo da resultados idénticos con o sin sl_mode explícito."""
+    args = dict(symbol="EURUSD", timeframe="H1",
+                config={"initial_balance": 10000.0})
+    params = {"ma_type": "ema", "fast_period": 5, "slow_period": 20}
+    candles = _candles(_trend_then_reversal(300))
+    a = run_backtest("ma_cross", params, candles, risk={"sl_pips": 30, "tp_pips": 40, "risk_percent": 1}, **args)
+    b = run_backtest("ma_cross", params, candles, risk={"sl_pips": 30, "tp_pips": 40, "risk_percent": 1, "sl_mode": "fixed"}, **args)
+    assert a["metrics"] == b["metrics"]
+    assert a["meta"]["sl_mode"] == "fixed"
+
+
 def test_account_blowup_caps_at_zero():
     """Una pérdida mayor al capital quiebra la cuenta: capital final 0 (no negativo),
     retorno y drawdown −100%, no se opera tras la quiebra."""

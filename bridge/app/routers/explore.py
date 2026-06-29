@@ -17,6 +17,8 @@ import os
 
 from ..auth import require_api_key
 from ..explore import (
+    ATR_SL_CHOICES,
+    ATR_TP_CHOICES,
     ENGINE_VERSION,
     MAX_CONFIGS,
     RISK_CHOICES,
@@ -35,7 +37,8 @@ from ..mt5_client import MT5Error, client
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
-KNOWN_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined"]
+KNOWN_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined",
+               "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar"]
 
 
 class ExploreRequest(BaseModel):
@@ -50,6 +53,8 @@ class ExploreRequest(BaseModel):
     risk_choices: list[float] = Field(default_factory=lambda: list(RISK_CHOICES), min_length=1)
     workers: int | None = Field(default=None, ge=1, le=64)
     use_cache: bool = Field(default=True)
+    sl_mode: str = Field(default="fixed")          # "fixed" (pips) | "atr" (N×ATR)
+    atr_period: int = Field(default=14, ge=2, le=200)
 
     model_config = {"populate_by_name": True}
 
@@ -77,6 +82,10 @@ async def explore_meta():
         "default_workers": default_workers(),
         "engine_version": ENGINE_VERSION,
         "cache": _default_cache.stats(),
+        # SL/TP por ATR (Fase 1): multiplicadores sugeridos + periodo por defecto.
+        "atr_sl_choices": ATR_SL_CHOICES,
+        "atr_tp_choices": ATR_TP_CHOICES,
+        "atr_period_default": 14,
     }
 
 
@@ -117,6 +126,8 @@ async def explore_start(req: ExploreRequest):
         "risk_choices": req.risk_choices,
         "workers": req.workers,
         "use_cache": req.use_cache,
+        "sl_mode": req.sl_mode,
+        "atr_period": req.atr_period,
     }
     return job.start(payload, client)
 

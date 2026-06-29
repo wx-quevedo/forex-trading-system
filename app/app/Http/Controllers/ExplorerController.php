@@ -37,7 +37,15 @@ class ExplorerController extends Controller
         'tp_choices' => [30, 40, 60, 100],
         'risk_choices' => [0.5, 1.0, 2.0],
         'sweep_timeframes' => ['M5', 'M15', 'H1', 'H4'],
-        'max_configs' => 60000,
+        'max_configs' => 200000,
+        'warn_configs' => 20000,
+        'cpu_count' => 8,
+        'default_workers' => 6,
+        'engine_version' => 4,
+        'cache' => ['entries' => 0, 'size_mb' => 0, 'size_bytes' => 0, 'engine_version' => 4, 'path' => ''],
+        'atr_sl_choices' => [1.5, 2.0, 3.0],
+        'atr_tp_choices' => [2.0, 3.0, 4.0],
+        'atr_period_default' => 14,
     ];
 
     public function __construct(
@@ -79,6 +87,8 @@ class ExplorerController extends Controller
             'risk_choices' => ['required', 'array', 'min:1'],
             'risk_choices.*' => ['numeric', 'min:0.1', 'max:100'],
             'workers' => ['nullable', 'integer', 'min:1', 'max:64'],
+            'sl_mode' => ['nullable', Rule::in(['fixed', 'atr'])],
+            'atr_period' => ['nullable', 'integer', 'min:2', 'max:200'],
         ]);
 
         $payload = [
@@ -92,6 +102,8 @@ class ExplorerController extends Controller
             'tp_choices' => array_map('floatval', $data['tp_choices']),
             'risk_choices' => array_map('floatval', $data['risk_choices']),
             'workers' => isset($data['workers']) ? (int) $data['workers'] : null,
+            'sl_mode' => $data['sl_mode'] ?? 'fixed',
+            'atr_period' => isset($data['atr_period']) ? (int) $data['atr_period'] : 14,
         ];
 
         return $this->proxy(fn () => $this->bridge->exploreStart($payload));

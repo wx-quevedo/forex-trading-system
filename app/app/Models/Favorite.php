@@ -14,6 +14,7 @@ class Favorite extends Model
         'name', 'source', 'pair', 'type', 'timeframe', 'params',
         'sl_pips', 'tp_pips', 'risk_percent', 'capital',
         'backtest_from', 'backtest_to', 'backtest_metrics',
+        'regime', 'regime_confidence',
     ];
 
     protected $casts = [
@@ -25,5 +26,6 @@ class Favorite extends Model
         'tp_pips' => 'float',
         'risk_percent' => 'float',
         'capital' => 'float',
+        'regime_confidence' => 'float',
     ];
 }

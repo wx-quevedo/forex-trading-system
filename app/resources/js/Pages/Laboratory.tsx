@@ -150,13 +150,17 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
     };
     const setIndicator = (nameKey: string, value: number | string) => setIndicators((p) => ({ ...p, [nameKey]: value }));
     const setRiskField = (key: string, value: number) => setRisk((p) => ({ ...p, [key]: value }));
+    // Modo SL/TP (Fase 1): fijo (pips) o adaptativo por ATR (sl/tp = multiplicadores).
+    const [slMode, setSlMode] = useState<'fixed' | 'atr'>('fixed');
+    const [atrPeriod, setAtrPeriod] = useState<number>(14);
+    const riskPayload = () => ({ ...risk, sl_mode: slMode, atr_period: atrPeriod });
 
     const runBacktest = async () => {
         setRunning(true);
         setError(null);
         try {
             const [bt, cd] = await Promise.all([
-                window.axios.post('/backtests/ephemeral', { strategy_type: type, pair, timeframe, date_from: period.date_from, date_to: period.date_to, indicators, risk, initial_balance: capital }),
+                window.axios.post('/backtests/ephemeral', { strategy_type: type, pair, timeframe, date_from: period.date_from, date_to: period.date_to, indicators, risk: riskPayload(), initial_balance: capital }),
                 window.axios.get(`/api/market/candles/${encodeURIComponent(pair)}`, { params: { timeframe, from: period.date_from, to: period.date_to } }),
             ]);
             setRun({ metrics: bt.data.metrics, trades: bt.data.trades ?? [], equity: bt.data.equity_curve ?? [] });
@@ -175,7 +179,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         setError(null);
         setTabPref('optimize');
         try {
-            const { data } = await window.axios.post('/backtests/optimize', { strategy_type: type, pair, timeframe, date_from: period.date_from, date_to: period.date_to, indicators, risk, initial_balance: capital });
+            const { data } = await window.axios.post('/backtests/optimize', { strategy_type: type, pair, timeframe, date_from: period.date_from, date_to: period.date_to, indicators, risk: riskPayload(), initial_balance: capital });
             setOptData(data as Optimization);
         } catch (e: unknown) {
             const err = e as { response?: { data?: { error?: string } } };
@@ -198,6 +202,14 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
 
     const addFavorite = async () => {
         const m = run?.metrics;
+        // Régimen del periodo de backtest (best-effort: no bloquea si falla).
+        let regime: string | null = null, regime_confidence: number | null = null;
+        try {
+            const { data } = await window.axios.get(`/api/market/regime/${encodeURIComponent(pair)}`, {
+                params: { timeframe, from: period.date_from, to: period.date_to },
+            });
+            regime = data?.regime ?? null; regime_confidence = data?.confidence ?? null;
+        } catch { /* el régimen es opcional */ }
         try {
             await window.axios.post('/favorites', {
                 name: `${schemas[type]?.label ?? type} ${pair} ${timeframe}`,
@@ -209,7 +221,9 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
                     return_pct: m.return_pct, net_pnl: m.net_pnl, win_rate: m.win_rate,
                     profit_factor: m.profit_factor, max_drawdown_pct: m.max_drawdown_pct,
                     total_trades: m.total_trades, total_costs: m.total_costs, final_balance: m.final_balance,
+                    sharpe: m.sharpe, sortino: m.sortino, calmar: m.calmar ?? null,
                 } : null,
+                regime, regime_confidence,
             });
             setFavSaved(true);
             setTimeout(() => setFavSaved(false), 2000);
@@ -223,6 +237,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
         fields, indicators, setIndicator, highlight, risk, setRiskField, period, setPeriod, capital, setCapital: setCapitalPref,
         running, runBacktest, openSave: () => setShowSave(true), run, candles, digits, loadCombo,
         tab, setTab: setTabPref, error, optData, optimizing, runOptimize, addFavorite, favSaved,
+        slMode, setSlMode, atrPeriod, setAtrPeriod,
     };
 
     return (
@@ -266,6 +281,7 @@ interface LabProps {
     tab: Tab; setTab: (t: Tab) => void; error: string | null;
     optData: Optimization | null; optimizing: boolean; runOptimize: () => void;
     addFavorite: () => void; favSaved: boolean;
+    slMode: 'fixed' | 'atr'; setSlMode: (m: 'fixed' | 'atr') => void; atrPeriod: number; setAtrPeriod: (n: number) => void;
 }
 
 // ---------- Layout dashboard: dos zonas de scroll (sidebar + content) ----------
@@ -408,12 +424,30 @@ function SidebarConfig({ lab }: { lab: LabProps }) {
             </div>
 
             <SectionLabel>Riesgo</SectionLabel>
-            <div className="grid grid-cols-2 gap-2">
-                {RISK_FIELDS.map((rf) => (
-                    <Field key={rf.key} label={rf.label} help={PARAM_HELP[rf.key]}>
-                        <input type="number" min={0} step={0.1} value={lab.risk[rf.key] ?? ''} onChange={(e) => lab.setRiskField(rf.key, Number(e.target.value))} className="input font-mono" />
-                    </Field>
+            <div className="mb-2 flex items-center gap-1.5">
+                {(['fixed', 'atr'] as const).map((m) => (
+                    <button key={m} type="button" onClick={() => lab.setSlMode(m)}
+                        className={`rounded-md border px-2.5 py-1 text-[11px] ${lab.slMode === m ? 'border-accent bg-accent/15 text-text-primary' : 'border-border text-text-secondary hover:text-text-primary'}`}>
+                        {m === 'fixed' ? 'SL/TP fijo' : 'SL/TP por ATR'}
+                    </button>
                 ))}
+                {lab.slMode === 'atr' && (
+                    <label className="ml-1 flex items-center gap-1 text-[11px] text-text-secondary">
+                        ATR
+                        <input type="number" min={2} max={200} value={lab.atrPeriod} onChange={(e) => lab.setAtrPeriod(Math.max(2, Number(e.target.value)))} className="w-16 rounded-md border border-border bg-bg-elevated px-1.5 py-1 font-mono text-[11px] text-text-primary" />
+                    </label>
+                )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+                {RISK_FIELDS.map((rf) => {
+                    const isSlTp = rf.key === 'sl_pips' || rf.key === 'tp_pips';
+                    const label = isSlTp && lab.slMode === 'atr' ? `${rf.key === 'sl_pips' ? 'SL' : 'TP'} (×ATR)` : rf.label;
+                    return (
+                        <Field key={rf.key} label={label} help={PARAM_HELP[rf.key]}>
+                            <input type="number" min={0} step={0.1} value={lab.risk[rf.key] ?? ''} onChange={(e) => lab.setRiskField(rf.key, Number(e.target.value))} className="input font-mono" />
+                        </Field>
+                    );
+                })}
             </div>
 
             <SectionLabel>Periodo</SectionLabel>

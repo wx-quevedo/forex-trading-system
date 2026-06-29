@@ -42,6 +42,25 @@ class MarketController extends Controller
         return $this->safe(fn () => $this->bridge->price(strtoupper($symbol)));
     }
 
+    /** Régimen de mercado del periodo (Fase 3): tendencia/rango/volátil + confianza. */
+    public function regime(Request $request, string $symbol): JsonResponse
+    {
+        $validated = $request->validate([
+            'timeframe' => ['nullable', 'string'],
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date'],
+        ]);
+        $query = ['timeframe' => strtoupper($validated['timeframe'] ?? 'H1')];
+        if (! empty($validated['from'])) {
+            $query['from'] = \Illuminate\Support\Carbon::parse($validated['from'])->toIso8601String();
+            $query['to'] = \Illuminate\Support\Carbon::parse($validated['to'] ?? 'now')->toIso8601String();
+        } else {
+            $query['count'] = 400;
+        }
+
+        return $this->safe(fn () => $this->bridge->marketRegime(strtoupper($symbol), $query));
+    }
+
     public function symbol(string $symbol): JsonResponse
     {
         return $this->safe(fn () => $this->bridge->symbolInfo(strtoupper($symbol)));

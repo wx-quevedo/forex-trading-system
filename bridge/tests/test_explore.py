@@ -267,6 +267,23 @@ def test_cache_key_sensitive_to_all_factors():
     assert changed(date_to="2025-07-01") != k0
 
 
+def test_cache_key_includes_sl_mode_and_atr_period():
+    base = dict(symbol="EURUSD#", stype="rsi", tf="H1", params={"period": 14},
+                sl=2, tp=3, rp=1.0, cfg={"initial_balance": 10000}, date_from="x", date_to="y")
+    fixed = make_cache_key(**base)  # sl_mode por defecto "fixed"
+    atr = make_cache_key(**base, sl_mode="atr", atr_period=14)
+    assert fixed != atr  # el modo es parte de la clave
+    # En ATR el periodo cambia el resultado:
+    assert make_cache_key(**base, sl_mode="atr", atr_period=14) != make_cache_key(**base, sl_mode="atr", atr_period=20)
+    # En fijo el periodo es irrelevante (no debe cambiar la clave):
+    assert make_cache_key(**base, sl_mode="fixed", atr_period=14) == make_cache_key(**base, sl_mode="fixed", atr_period=99)
+
+
+def test_engine_version_bumped_for_atr():
+    from app.explore.cache import ENGINE_VERSION
+    assert ENGINE_VERSION >= 4
+
+
 def test_cache_hit_skips_recompute(tmp_path):
     cache = ExploreCache(str(tmp_path / "c.db"))
     candles = _wave_candles(440)

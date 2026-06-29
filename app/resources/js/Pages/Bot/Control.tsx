@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react';
+import { Head, Link, router } from '@inertiajs/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import BotLiveChart from '@/Components/BotLiveChart';
@@ -7,15 +7,24 @@ import BotHistoryTable from '@/Components/BotHistoryTable';
 import TradeDetail from '@/Components/TradeDetail';
 import LiveClock from '@/Components/LiveClock';
 import { fmtMoney, fmtTimeMs, pnlColor } from '@/lib/format';
-import type { BotClosedTrade, BotEvent, BotRunSummary, BotSignal, BotStatus, Candle, Strategy, TelegramSettings } from '@/types';
+import type { BotClosedTrade, BotEvent, BotRunSummary, BotSignal, BotStatus, Candle, Favorite, Strategy, TelegramSettings } from '@/types';
 
 interface Props {
-    strategies: Pick<Strategy, 'id' | 'name' | 'pair' | 'timeframe' | 'parameters' | 'version'>[];
+    strategies: (Pick<Strategy, 'id' | 'name' | 'pair' | 'timeframe' | 'parameters' | 'version'> & { favorite_id?: number | null })[];
+    favorites: Favorite[];
     status: BotStatus;
     telegram: TelegramSettings;
     recentTrades: BotClosedTrade[];
     journal: BotEvent[];
 }
+
+/** Lote sugerido desde el riesgo% y capital del favorito (aprox: ~$10/pip por lote). */
+const suggestLot = (f: Favorite): number => {
+    const risk = f.risk_percent ?? 1;
+    const sl = f.sl_pips ?? 20;
+    const raw = (f.capital * risk / 100) / (Math.max(1, sl) * 10);
+    return Math.max(0.01, Math.round(raw * 100) / 100);
+};
 
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 type Tab = 'positions' | 'history' | 'log' | 'journal';
@@ -23,7 +32,7 @@ type Tab = 'positions' | 'history' | 'log' | 'journal';
 const DOT: Record<string, string> = { running: 'bg-profit', paused: 'bg-warning', stopped: 'bg-text-secondary', error: 'bg-loss' };
 const STATUS_LABEL: Record<string, string> = { running: 'Activo', paused: 'Pausado', stopped: 'Detenido', error: 'Error' };
 
-export default function Control({ strategies, status: initialStatus, telegram: initialTelegram, recentTrades, journal: initialJournal }: Props) {
+export default function Control({ strategies, favorites, status: initialStatus, telegram: initialTelegram, recentTrades, journal: initialJournal }: Props) {
     const [status, setStatus] = useState<BotStatus>(initialStatus);
     const [journal, setJournal] = useState<BotEvent[]>(initialJournal ?? []);
     const [telegram, setTelegram] = useState<TelegramSettings>(initialTelegram);
@@ -125,6 +134,27 @@ export default function Control({ strategies, status: initialStatus, telegram: i
     const add = () => action('/bot/start', { strategy_id: addId, lot, daily_loss_limit: dailyLossLimit, max_positions: maxPositions, timeframe: timeframe || addStrategy?.timeframe });
     const panic = () => { if (confirm('¿Cerrar TODAS las posiciones de TODAS las estrategias y detener el bot?')) action('/bot/panic'); };
 
+    // --- Cargar desde Favoritos (Fase 8) ---
+    const [favSel, setFavSel] = useState<Set<number>>(new Set());
+    const [confirmRows, setConfirmRows] = useState<{ fav: Favorite; lot: number }[] | null>(null);
+    const toggleFav = (id: number) => setFavSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    const openConfirm = () => {
+        const rows = favorites.filter((f) => favSel.has(f.id)).map((f) => ({ fav: f, lot: suggestLot(f) }));
+        if (rows.length) setConfirmRows(rows);
+    };
+    const setConfirmLot = (id: number, lot: number) => setConfirmRows((rows) => rows?.map((r) => (r.fav.id === id ? { ...r, lot } : r)) ?? null);
+    const confirmLoad = async () => {
+        if (!confirmRows) return;
+        await action('/bot/load-favorites', {
+            favorites: confirmRows.map((r) => ({ favorite_id: r.fav.id, lot: r.lot })),
+            daily_loss_limit: dailyLossLimit, max_positions: maxPositions,
+        });
+        setConfirmRows(null);
+        setFavSel(new Set());
+        // Refresca la lista de estrategias para que la traza "★ favorito" aparezca.
+        router.reload({ only: ['strategies', 'favorites'] });
+    };
+
     const dailyPnl = status.daily_pnl ?? 0;
     const positions = status.positions ?? [];
     const chartPositions = selectedRun ? positions.filter((p) => p.strategy_id === selectedRun.strategy_id) : [];
@@ -184,6 +214,33 @@ export default function Control({ strategies, status: initialStatus, telegram: i
                         </div>
                         <button type="button" onClick={add} disabled={busy || !addId} className="mt-4 w-full rounded-md bg-profit px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">+ Añadir a la ejecución</button>
                         <p className="mt-2 text-[11px] text-text-secondary">Cada estrategia opera con su propio lote y límites (riesgo independiente).</p>
+                    </section>
+
+                    {/* Cargar desde Favoritos (Fase 8) */}
+                    <section className="rounded-lg border border-border bg-bg-surface p-4">
+                        <div className="mb-2 flex items-center justify-between">
+                            <h2 className="text-sm font-semibold">Cargar desde Favoritos</h2>
+                            <Link href="/favorites" className="text-[11px] text-accent hover:underline">Ver favoritos</Link>
+                        </div>
+                        {favorites.length === 0 ? (
+                            <p className="text-[11px] text-text-secondary">Sin favoritos. Marca candidatas con ☆ en el Explorador o el Laboratorio.</p>
+                        ) : (
+                            <>
+                                <div className="max-h-44 overflow-auto rounded-md border border-border/60">
+                                    {favorites.map((f) => (
+                                        <label key={f.id} className="flex cursor-pointer items-center gap-2 border-b border-border/40 px-2 py-1.5 text-xs last:border-0 hover:bg-bg-elevated">
+                                            <input type="checkbox" checked={favSel.has(f.id)} onChange={() => toggleFav(f.id)} />
+                                            <span className="font-mono text-text-primary">{f.pair}·{f.timeframe}·{f.type}</span>
+                                            <span className="ml-auto font-mono text-[10px] text-text-secondary">SL{f.sl_pips ?? '—'}/TP{f.tp_pips ?? '—'} · {f.risk_percent ?? '—'}%</span>
+                                        </label>
+                                    ))}
+                                </div>
+                                <button type="button" onClick={openConfirm} disabled={busy || favSel.size === 0} className="mt-3 w-full rounded-md border border-accent px-4 py-2 text-sm font-semibold text-accent hover:bg-accent/10 disabled:opacity-50">
+                                    Cargar {favSel.size || ''} al bot…
+                                </button>
+                                <p className="mt-2 text-[11px] text-text-secondary">Verás un resumen de confirmación antes de operar.</p>
+                            </>
+                        )}
                     </section>
 
                     {/* Estrategias activas */}
@@ -255,6 +312,52 @@ export default function Control({ strategies, status: initialStatus, telegram: i
 
             {selectedTrade && (
                 <TradeDetail trade={selectedTrade} symbol={selectedTrade.symbol} timeframe={chart.timeframe} digits={digits} strategyType={chart.type} params={chart.params} onClose={() => setSelectedTrade(null)} />
+            )}
+
+            {confirmRows && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setConfirmRows(null)}>
+                    <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl rounded-lg border border-border bg-bg-surface p-5 shadow-2xl">
+                        <h2 className="mb-1 text-sm font-semibold">Confirmar antes de operar</h2>
+                        <p className="mb-3 text-xs text-text-secondary">Revisa cada estrategia. Se añadirán a la ejecución del bot (demo) con su lote.</p>
+
+                        <div className="max-h-[50vh] space-y-2 overflow-auto">
+                            {confirmRows.map(({ fav, lot }) => (
+                                <div key={fav.id} className="rounded-md border border-border bg-bg-elevated p-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="font-mono text-sm text-text-primary">{fav.pair} · {fav.timeframe} · {fav.type}</span>
+                                        <span className="text-[11px] text-warning">★ {fav.name}</span>
+                                    </div>
+                                    <div className="mt-1 font-mono text-[11px] text-text-secondary">
+                                        {Object.entries(fav.params).map(([k, v]) => `${k}=${v}`).join(' · ')} · SL{fav.sl_pips ?? '—'}/TP{fav.tp_pips ?? '—'}
+                                    </div>
+                                    <div className="mt-1 font-mono text-[11px] text-text-secondary">
+                                        Validado: riesgo {fav.risk_percent ?? '—'}% · capital {fmtMoney(fav.capital)}
+                                        {fav.backtest_from && <> · backtest {fav.backtest_from}→{fav.backtest_to}</>}
+                                    </div>
+                                    <label className="mt-2 flex items-center gap-2 text-xs">
+                                        <span className="text-text-secondary">Lote a operar</span>
+                                        <input type="number" step={0.01} min={0.01} value={lot} onChange={(e) => setConfirmLot(fav.id, Number(e.target.value))} className="input w-28 font-mono" />
+                                        <span className="text-[10px] text-text-secondary">(sugerido por riesgo%·capital·SL — aprox.)</span>
+                                    </label>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+                            El bot opera con LOTE FIJO (no replica el riesgo% del favorito en vivo). El lote sugerido es una aproximación: ajústalo.
+                            Verifica que la candidata sigue vigente para las condiciones actuales.
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-3">
+                            <FieldLab label="Límite pérdida diaria (por estrategia)"><input type="number" min={0} value={dailyLossLimit} onChange={(e) => setDailyLossLimit(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                            <FieldLab label="Máx posiciones (por estrategia)"><input type="number" min={1} max={20} value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                        </div>
+
+                        <div className="mt-4 flex justify-end gap-2">
+                            <button type="button" onClick={() => setConfirmRows(null)} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary">Cancelar</button>
+                            <button type="button" onClick={confirmLoad} disabled={busy} className="rounded-md bg-profit px-4 py-1.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50">Confirmar y operar</button>
+                        </div>
+                    </div>
+                </div>
             )}
         </AppLayout>
     );

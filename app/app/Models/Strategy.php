@@ -10,7 +10,7 @@ class Strategy extends Model
 {
     protected $fillable = [
         'name', 'description', 'pair', 'timeframe',
-        'parameters', 'version', 'parent_id', 'is_active',
+        'parameters', 'version', 'parent_id', 'is_active', 'favorite_id',
     ];
 
     protected $casts = [
@@ -23,6 +23,12 @@ class Strategy extends Model
     public function parent(): BelongsTo
     {
         return $this->belongsTo(Strategy::class, 'parent_id');
+    }
+
+    /** Favorito de origen (si se materializó desde Favoritos para operar). */
+    public function favorite(): BelongsTo
+    {
+        return $this->belongsTo(Favorite::class);
     }
 
     /** Versiones derivadas de esta estrategia. */

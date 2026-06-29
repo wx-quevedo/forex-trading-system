@@ -86,6 +86,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/bot/status', [BotController::class, 'status'])->name('bot.status');
     Route::get('/bot/state', [BotController::class, 'state'])->name('bot.state');
     Route::post('/bot/start', [BotController::class, 'start'])->name('bot.start');
+    Route::post('/bot/load-favorites', [BotController::class, 'loadFavorites'])->name('bot.load-favorites');
     Route::post('/bot/pause', [BotController::class, 'pause'])->name('bot.pause');
     Route::post('/bot/resume', [BotController::class, 'resume'])->name('bot.resume');
     Route::post('/bot/stop', [BotController::class, 'stop'])->name('bot.stop');
@@ -96,6 +97,7 @@ Route::middleware('auth')->group(function () {
     // Endpoints JSON para el frontend (refresco de charts / precios / posiciones).
     Route::prefix('api')->group(function () {
         Route::get('/market/candles/{symbol}', [MarketController::class, 'candles']);
+        Route::get('/market/regime/{symbol}', [MarketController::class, 'regime']);
         Route::get('/market/price/{symbol}', [MarketController::class, 'price']);
         Route::get('/market/symbol/{symbol}', [MarketController::class, 'symbol']);
         Route::get('/market/session/{symbol}', [MarketController::class, 'session']);

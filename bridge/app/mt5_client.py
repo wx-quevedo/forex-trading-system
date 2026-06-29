@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from .config import settings
+from .instruments import build_profile
 
 try:  # pragma: no cover - depende de plataforma
     import MetaTrader5 as mt5  # type: ignore
@@ -279,22 +280,27 @@ class MT5Client:
         return 3 * 3600 if start <= now < end else 2 * 3600
 
     def symbol_costs(self, symbol: str) -> dict[str, Any]:
-        """Costos reales del broker para el backtest: spread (en pips), swap y punto."""
+        """Perfil de instrumento real del broker (Fase 5): spread, swap, punto y —
+        crítico— `pip_value_per_lot` derivado del tick REAL (trade_tick_value/size),
+        además de volume_min/step y tipo. Así índices/energía/metales se calculan con
+        su aritmética correcta sin parches ad-hoc."""
         self.ensure_connected()
         info = mt5.symbol_info(symbol)
         if info is None:
             return {}
-        # pip = 10 puntos del símbolo (coherente con el motor de backtest): así el
-        # spread en pips es correcto también para metales/índices (gold point 0.01 →
-        # pip 0.1), no inflado por el 0.0001 fijo de forex.
-        pip = float(info.point) * 10 if info.point else (0.01 if symbol.upper().endswith("JPY") else 0.0001)
-        spread_pips = (info.spread * info.point) / pip if pip else 0.0
-        return {
-            "spread_pips": round(spread_pips, 3),
-            "swap_long_pts": float(info.swap_long),
-            "swap_short_pts": float(info.swap_short),
-            "point": float(info.point),
-        }
+        return build_profile(
+            symbol=symbol,
+            path=getattr(info, "path", None),
+            point=float(info.point),
+            spread=float(info.spread),
+            swap_long=float(info.swap_long),
+            swap_short=float(info.swap_short),
+            tick_value=getattr(info, "trade_tick_value", None),
+            tick_size=getattr(info, "trade_tick_size", None),
+            contract_size=getattr(info, "trade_contract_size", None),
+            volume_min=getattr(info, "volume_min", None),
+            volume_step=getattr(info, "volume_step", None),
+        )
 
     def _ensure_symbol(self, symbol: str) -> None:
         # Activar SIEMPRE primero: un símbolo oculto que MT5 nunca seleccionó puede

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\BotEvent;
 use App\Models\BotRun;
+use App\Models\Favorite;
 use App\Models\Strategy;
 use App\Models\Trade;
 use App\Services\BotService;
@@ -29,7 +30,8 @@ class BotController extends Controller
     public function control(): Response
     {
         return Inertia::render('Bot/Control', [
-            'strategies' => Strategy::orderBy('name')->get(['id', 'name', 'pair', 'timeframe', 'parameters', 'version']),
+            'strategies' => Strategy::orderBy('name')->get(['id', 'name', 'pair', 'timeframe', 'parameters', 'version', 'favorite_id']),
+            'favorites' => Favorite::latest()->get(),
             'status' => $this->bot->status(),
             'telegram' => $this->telegram->settings(),
             'recentTrades' => Trade::whereNotNull('bot_run_id')->latest('close_at')->limit(50)->get(),
@@ -69,9 +71,81 @@ class BotController extends Controller
         ]);
 
         $strategy = Strategy::findOrFail($data['strategy_id']);
+
+        try {
+            $status = $this->startStrategy($strategy, (float) $data['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], $data['timeframe'] ?? null);
+        } catch (BridgeException $e) {
+            return response()->json(['error' => $e->getMessage()], $e->status);
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
+        }
+
+        return response()->json(['status' => $status]);
+    }
+
+    /**
+     * Fase 8: carga uno o varios FAVORITOS al bot que opera. Cada favorito se
+     * "materializa" como Strategy (con traza al favorito, sin duplicar) y se arranca
+     * con su propio lote (sugerido desde riesgo%/capital en el front, ajustable).
+     */
+    public function loadFavorites(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'favorites' => ['required', 'array', 'min:1'],
+            'favorites.*.favorite_id' => ['required', 'exists:favorites,id'],
+            'favorites.*.lot' => ['required', 'numeric', 'gt:0', 'max:100'],
+            'daily_loss_limit' => ['required', 'numeric', 'min:0'],
+            'max_positions' => ['required', 'integer', 'min:1', 'max:20'],
+        ]);
+
+        $errors = [];
+        foreach ($data['favorites'] as $row) {
+            $fav = Favorite::find($row['favorite_id']);
+            if (! $fav) {
+                continue;
+            }
+            // Materializa el favorito como Strategy (sin duplicar al recargar).
+            $strategy = Strategy::updateOrCreate(
+                ['favorite_id' => $fav->id],
+                [
+                    'name' => '★ ' . $fav->name,
+                    'description' => 'Cargada desde Favoritos (Fase 8)',
+                    'pair' => $fav->pair,
+                    'timeframe' => $fav->timeframe,
+                    'parameters' => [
+                        'type' => $fav->type,
+                        'indicators' => $fav->params,
+                        'risk' => [
+                            'sl_pips' => $fav->sl_pips,
+                            'tp_pips' => $fav->tp_pips,
+                            'risk_percent' => $fav->risk_percent,
+                        ],
+                    ],
+                    'version' => 1,
+                    'is_active' => false,
+                ],
+            );
+
+            try {
+                $this->startStrategy($strategy, (float) $row['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], null);
+            } catch (Throwable $e) {
+                $errors[] = "{$fav->name}: " . $e->getMessage();
+            }
+        }
+
+        return response()->json(['status' => $this->bot->status(), 'errors' => $errors]);
+    }
+
+    /**
+     * Arranca una estrategia en el bot (común a /bot/start y a cargar favoritos):
+     * cierra corridas previas, crea la corrida, llama al bridge y notifica/loguea.
+     * Lanza si el bridge falla (el caller decide la respuesta).
+     */
+    private function startStrategy(Strategy $strategy, float $lot, float $dailyLossLimit, int $maxPositions, ?string $timeframe): array
+    {
         $params = $strategy->parameters ?? [];
         $risk = $params['risk'] ?? [];
-        $timeframe = $data['timeframe'] ?? $strategy->timeframe;
+        $tf = $timeframe ?? $strategy->timeframe;
 
         // Una sola corrida activa por estrategia: cierra anteriores en la BD.
         BotRun::where('strategy_id', $strategy->id)->whereIn('status', ['running', 'paused'])
@@ -92,26 +166,23 @@ class BotController extends Controller
                 'strategy_type' => $params['type'] ?? 'ma_cross',
                 'params' => $params['indicators'] ?? [],
                 'symbol' => $strategy->pair,
-                'timeframe' => $timeframe,
-                'lot' => (float) $data['lot'],
+                'timeframe' => $tf,
+                'lot' => $lot,
                 'sl_pips' => (float) ($risk['sl_pips'] ?? 20),
                 'tp_pips' => (float) ($risk['tp_pips'] ?? 40),
-                'daily_loss_limit' => (float) $data['daily_loss_limit'],
-                'max_positions' => (int) $data['max_positions'],
+                'daily_loss_limit' => $dailyLossLimit,
+                'max_positions' => $maxPositions,
             ]);
-        } catch (BridgeException $e) {
-            $run->update(['status' => 'error', 'stopped_at' => now()]);
-            return response()->json(['error' => $e->getMessage()], $e->status);
         } catch (Throwable $e) {
             $run->update(['status' => 'error', 'stopped_at' => now()]);
-            return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
+            throw $e;
         }
 
-        $msg = "Estrategia añadida: {$strategy->name} ({$strategy->pair} {$timeframe}) · lote {$data['lot']} · máx {$data['max_positions']} pos · límite diario " . number_format((float) $data['daily_loss_limit'], 2);
+        $msg = "Estrategia añadida: {$strategy->name} ({$strategy->pair} {$tf}) · lote {$lot} · máx {$maxPositions} pos · límite diario " . number_format($dailyLossLimit, 2);
         $this->telegram->notify('started', $msg);
         $this->bot->logEvent($run->id, 'started', 'info', $msg, $strategy->id);
 
-        return response()->json(['status' => $status]);
+        return $status;
     }
 
     public function pause(Request $request): JsonResponse

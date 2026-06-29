@@ -128,6 +128,12 @@ class PythonBridgeService
         return $this->request('GET', "/candles/{$symbol}", ['query' => $query]);
     }
 
+    /** Régimen de mercado del periodo (Fase 3). $query: timeframe, from, to, count. */
+    public function marketRegime(string $symbol, array $query = []): array
+    {
+        return $this->request('GET', '/market/regime/' . rawurlencode($symbol), ['query' => $query], timeout: 30);
+    }
+
     public function positions(?string $symbol = null): array
     {
         return $this->request('GET', '/positions', $symbol ? ['query' => ['symbol' => $symbol]] : []);
