@@ -85,6 +85,8 @@ export interface StrategyRisk {
     sl_pips?: number | null;
     tp_pips?: number | null;
     risk_percent?: number | null;
+    sl_mode?: string;     // 'fixed' | 'atr' (Fase 1)
+    atr_period?: number;
 }
 
 export interface StrategyParameters {

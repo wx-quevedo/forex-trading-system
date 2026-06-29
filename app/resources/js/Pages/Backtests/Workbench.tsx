@@ -44,6 +44,11 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
         tp_pips: Number(strategy.parameters.risk?.tp_pips ?? 40),
         risk_percent: Number(strategy.parameters.risk?.risk_percent ?? 1),
     });
+    // Modo SL/TP de la estrategia (Fase 1). El Workbench no lo edita, pero lo PRESERVA:
+    // sin esto correría una estrategia ATR con stops fijos (resultado falso).
+    const slMode: 'fixed' | 'atr' = strategy.parameters.risk?.sl_mode === 'atr' ? 'atr' : 'fixed';
+    const atrPeriod = Number(strategy.parameters.risk?.atr_period ?? 14);
+    const riskPayload = () => ({ ...risk, sl_mode: slMode, atr_period: atrPeriod });
     const [period, setPeriod] = useState({ date_from: backtest.date_from.slice(0, 10), date_to: backtest.date_to.slice(0, 10) });
 
     const init = emptyRun(backtest);
@@ -67,7 +72,7 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
         try {
             const { data } = await window.axios.post('/backtests/optimize', {
                 strategy_type: type, pair: strategy.pair, timeframe: strategy.timeframe,
-                date_from: period.date_from, date_to: period.date_to, indicators, risk,
+                date_from: period.date_from, date_to: period.date_to, indicators, risk: riskPayload(),
             });
             setOptData(data as Optimization);
         } catch (e: unknown) {
@@ -89,7 +94,7 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
                 date_from: period.date_from,
                 date_to: period.date_to,
                 indicators,
-                risk,
+                risk: riskPayload(),
             });
             const run: WorkbenchRun = { metrics: data.metrics, trades: data.trades ?? [], equity: data.equity_curve ?? [] };
             setRuns((p) => ({ initial: p.initial, previous: p.current, current: run }));
@@ -130,7 +135,7 @@ export default function Workbench({ backtest, strategy, schemas, timeframes, can
     const saveVersion = () => {
         const payload = {
             indicators,
-            risk,
+            risk: riskPayload(),
             date_from: period.date_from,
             date_to: period.date_to,
             persist_run: persistRun,

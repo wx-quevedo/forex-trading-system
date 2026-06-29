@@ -20,7 +20,7 @@ interface Preload {
     pair: string;
     timeframe: string;
     indicators: Record<string, number | string>;
-    risk: Record<string, number>;
+    risk: Record<string, number | string>;  // incluye sl_mode (string) / atr_period
 }
 
 interface Props {
@@ -127,6 +127,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
             const c = JSON.parse(fromUrl ? decodeURIComponent(raw) : raw) as {
                 type?: string; pair?: string; timeframe?: string;
                 indicators?: Record<string, number | string>; risk?: Record<string, number>;
+                sl_mode?: string; atr_period?: number;
                 capital?: number; period?: { date_from: string; date_to: string };
             };
             if (c.type) setType(c.type);
@@ -134,6 +135,10 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
             if (c.timeframe) setTimeframe(c.timeframe);
             if (c.indicators) setIndicators(c.indicators);
             if (c.risk) setRisk((p) => ({ ...p, ...c.risk }));
+            // Preserva el modo SL/TP (ATR/fijo) del Explorador: sin esto el Lab corría
+            // una estrategia ATR con stops fijos -> resultado catastrófico falso.
+            if (c.sl_mode) setSlMode(c.sl_mode === 'atr' ? 'atr' : 'fixed');
+            if (c.atr_period) setAtrPeriod(Number(c.atr_period));
             if (c.capital) setCapitalPref(c.capital);
             if (c.period?.date_from && c.period?.date_to) setPeriod(c.period);
             if (c.indicators) {
@@ -151,8 +156,9 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
     const setIndicator = (nameKey: string, value: number | string) => setIndicators((p) => ({ ...p, [nameKey]: value }));
     const setRiskField = (key: string, value: number) => setRisk((p) => ({ ...p, [key]: value }));
     // Modo SL/TP (Fase 1): fijo (pips) o adaptativo por ATR (sl/tp = multiplicadores).
-    const [slMode, setSlMode] = useState<'fixed' | 'atr'>('fixed');
-    const [atrPeriod, setAtrPeriod] = useState<number>(14);
+    // Modo SL/TP inicial desde la estrategia precargada (preserva ATR; default fijo).
+    const [slMode, setSlMode] = useState<'fixed' | 'atr'>(preload?.risk?.sl_mode === 'atr' ? 'atr' : 'fixed');
+    const [atrPeriod, setAtrPeriod] = useState<number>(Number(preload?.risk?.atr_period ?? 14));
     const riskPayload = () => ({ ...risk, sl_mode: slMode, atr_period: atrPeriod });
 
     const runBacktest = async () => {
@@ -197,7 +203,8 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
 
     const save = (e: FormEvent) => {
         e.preventDefault();
-        router.post('/laboratory', { name, description, type, pair, timeframe, indicators, risk, from_strategy_id: preload?.from_strategy_id ?? null });
+        // Persiste el modo SL/TP en la estrategia (si no, al backtestearla luego se perdería el ATR).
+        router.post('/laboratory', { name, description, type, pair, timeframe, indicators, risk: { ...risk, sl_mode: slMode, atr_period: atrPeriod }, from_strategy_id: preload?.from_strategy_id ?? null });
     };
 
     const addFavorite = async () => {

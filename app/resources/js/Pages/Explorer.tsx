@@ -264,6 +264,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         const combo = {
             type: r.type, pair: r.pair, timeframe: r.timeframe, indicators: r.params,
             risk: { sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent },
+            sl_mode: r.sl_mode ?? slMode, atr_period: atrPeriod,
             capital, period,
         };
         window.open(`/laboratory?combo=${encodeURIComponent(JSON.stringify(combo))}`, '_blank', 'noopener');
@@ -645,7 +646,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             )}
 
             {/* Modal: guardar una combinación como estrategia */}
-            {saveRow && <SaveModal row={saveRow} schemas={schemas} onClose={() => setSaveRow(null)} />}
+            {saveRow && <SaveModal row={saveRow} schemas={schemas} atrPeriod={atrPeriod} onClose={() => setSaveRow(null)} />}
             {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} onClose={() => setScoreRow(null)} />}
         </AppLayout>
     );
@@ -773,7 +774,7 @@ function ScoreModal({ row, schemas, onClose }: { row: AugRow; schemas: StrategyS
     );
 }
 
-function SaveModal({ row, schemas, onClose }: { row: ExploreResultRow; schemas: StrategySchemas; onClose: () => void }) {
+function SaveModal({ row, schemas, atrPeriod, onClose }: { row: ExploreResultRow; schemas: StrategySchemas; atrPeriod: number; onClose: () => void }) {
     const [name, setName] = useState(`${schemas[row.type]?.label ?? row.type} ${row.pair} ${row.timeframe}`);
     const [description, setDescription] = useState(`Hallada en el explorador · robustez ${row.robustness} · out ${row.out_return}%`);
 
@@ -781,7 +782,9 @@ function SaveModal({ row, schemas, onClose }: { row: ExploreResultRow; schemas: 
         e.preventDefault();
         router.post('/laboratory', {
             name, description, type: row.type, pair: row.pair, timeframe: row.timeframe,
-            indicators: row.params, risk: { sl_pips: row.sl_pips, tp_pips: row.tp_pips, risk_percent: row.risk_percent },
+            indicators: row.params,
+            // Persiste el modo SL/TP (ATR/fijo) en la estrategia para no perderlo al backtestear luego.
+            risk: { sl_pips: row.sl_pips, tp_pips: row.tp_pips, risk_percent: row.risk_percent, sl_mode: row.sl_mode ?? 'fixed', atr_period: atrPeriod },
             from_strategy_id: null,
         });
     };

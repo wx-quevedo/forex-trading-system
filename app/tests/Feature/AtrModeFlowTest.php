@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\Strategy;
 use App\Models\User;
 use App\Services\PythonBridgeService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Inertia\Testing\AssertableInertia;
 use Mockery\MockInterface;
 use Tests\TestCase;
 
@@ -58,5 +60,43 @@ class AtrModeFlowTest extends TestCase
         $this->assertNotNull($captured, 'runBacktest no fue llamado');
         $this->assertSame('atr', $captured['sl_mode'] ?? null, 'el walk-forward NO recibió sl_mode=atr');
         $this->assertSame(14, $captured['atr_period'] ?? null, 'el walk-forward NO recibió atr_period');
+    }
+
+    private function atrStrategy(): Strategy
+    {
+        return Strategy::create([
+            'name' => 'ST ATR', 'pair' => 'EURUSD#', 'timeframe' => 'H1',
+            'parameters' => [
+                'type' => 'supertrend',
+                'indicators' => ['period' => 10, 'multiplier' => 3],
+                'risk' => ['sl_pips' => 3, 'tp_pips' => 3, 'risk_percent' => 1, 'sl_mode' => 'atr', 'atr_period' => 14],
+            ],
+            'version' => 1,
+        ]);
+    }
+
+    public function test_lab_preload_lleva_el_modo_atr(): void
+    {
+        $s = $this->atrStrategy();
+        $this->actingAs(User::factory()->create())
+            ->get('/laboratory?strategy=' . $s->id)
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->component('Laboratory')
+                ->where('preload.risk.sl_mode', 'atr')
+                ->where('preload.risk.atr_period', 14));
+    }
+
+    public function test_lab_store_persiste_el_modo_atr(): void
+    {
+        $this->actingAs(User::factory()->create())
+            ->post('/laboratory', [
+                'name' => 'Nueva ATR', 'type' => 'supertrend', 'pair' => 'EURUSD#', 'timeframe' => 'H1',
+                'indicators' => ['period' => 10, 'multiplier' => 3],
+                'risk' => ['sl_pips' => 3, 'tp_pips' => 3, 'risk_percent' => 1, 'sl_mode' => 'atr', 'atr_period' => 14],
+            ]);
+
+        $s = Strategy::where('name', 'Nueva ATR')->firstOrFail();
+        $this->assertSame('atr', $s->parameters['risk']['sl_mode'] ?? null);
+        $this->assertSame(14, $s->parameters['risk']['atr_period'] ?? null);
     }
 }
