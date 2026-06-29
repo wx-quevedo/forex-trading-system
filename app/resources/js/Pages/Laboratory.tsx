@@ -216,6 +216,7 @@ export default function Laboratory({ schemas, timeframes, symbols, preload, defa
                 source: 'lab',
                 pair, type, timeframe, params: indicators,
                 sl_pips: risk.sl_pips, tp_pips: risk.tp_pips, risk_percent: risk.risk_percent, capital,
+                sl_mode: slMode, atr_period: atrPeriod,
                 backtest_from: period.date_from, backtest_to: period.date_to,
                 backtest_metrics: m ? {
                     return_pct: m.return_pct, net_pnl: m.net_pnl, win_rate: m.win_rate,

@@ -13,6 +13,7 @@ class Favorite extends Model
     protected $fillable = [
         'name', 'source', 'pair', 'type', 'timeframe', 'params',
         'sl_pips', 'tp_pips', 'risk_percent', 'capital',
+        'sl_mode', 'atr_period',
         'backtest_from', 'backtest_to', 'backtest_metrics',
         'regime', 'regime_confidence',
     ];
@@ -26,6 +27,7 @@ class Favorite extends Model
         'tp_pips' => 'float',
         'risk_percent' => 'float',
         'capital' => 'float',
+        'atr_period' => 'integer',
         'regime_confidence' => 'float',
     ];
 }

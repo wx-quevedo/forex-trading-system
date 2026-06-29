@@ -405,6 +405,8 @@ export interface Favorite {
     tp_pips: number | null;
     risk_percent: number | null;
     capital: number;
+    sl_mode?: string;
+    atr_period?: number;
     backtest_from: string | null;
     backtest_to: string | null;
     backtest_metrics: BacktestMetrics | null;

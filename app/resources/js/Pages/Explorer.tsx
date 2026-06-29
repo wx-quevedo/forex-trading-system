@@ -242,6 +242,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                 source: 'explorer',
                 pair: r.pair, type: r.type, timeframe: r.timeframe, params: r.params,
                 sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent, capital,
+                sl_mode: r.sl_mode ?? slMode, atr_period: atrPeriod,
                 backtest_from: context.date_from, backtest_to: context.date_to,
                 backtest_metrics: {
                     return_pct: r.return_pct, net_pnl: r.net_pnl, win_rate: r.win_rate,

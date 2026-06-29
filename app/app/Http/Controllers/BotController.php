@@ -129,6 +129,10 @@ class BotController extends Controller
                             'sl_pips' => $fav->sl_pips,
                             'tp_pips' => $fav->tp_pips,
                             'risk_percent' => $fav->risk_percent,
+                            // Preserva el modo SL/TP del favorito en la definición (el
+                            // ejecutor en vivo aún opera en pips fijos; integridad a futuro).
+                            'sl_mode' => $fav->sl_mode ?? 'fixed',
+                            'atr_period' => $fav->atr_period ?? 14,
                         ],
                     ],
                     'version' => 1,

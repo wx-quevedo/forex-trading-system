@@ -119,7 +119,9 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
                     strategy_type: f.type, pair: f.pair, timeframe: f.timeframe,
                     date_from: op.date_from, date_to: op.date_to,
                     indicators: f.params,
-                    risk: { sl_pips: f.sl_pips, tp_pips: f.tp_pips, risk_percent: f.risk_percent },
+                    // sl_mode/atr_period: el walk-forward DEBE usar el mismo modo (ATR/fijo)
+                    // con el que se exploró la estrategia, no caer a fijo.
+                    risk: { sl_pips: f.sl_pips, tp_pips: f.tp_pips, risk_percent: f.risk_percent, sl_mode: f.sl_mode ?? 'fixed', atr_period: f.atr_period ?? 14 },
                     initial_balance: f.capital,
                 });
                 out[f.id] = { metrics: data.metrics, trades: data.trades ?? [], equity: data.equity_curve ?? [] };
