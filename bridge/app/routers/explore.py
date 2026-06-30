@@ -19,6 +19,7 @@ from ..auth import require_api_key
 from ..explore import (
     ATR_SL_CHOICES,
     ATR_TP_CHOICES,
+    ATR_PERIOD_CHOICES,
     ENGINE_VERSION,
     MAX_CONFIGS,
     RISK_CHOICES,
@@ -54,7 +55,8 @@ class ExploreRequest(BaseModel):
     workers: int | None = Field(default=None, ge=1, le=64)
     use_cache: bool = Field(default=True)
     sl_mode: str = Field(default="fixed")          # "fixed" (pips) | "atr" (N×ATR)
-    atr_period: int = Field(default=14, ge=2, le=200)
+    atr_period: int = Field(default=14, ge=2, le=200)   # compat (valor único)
+    atr_periods: list[int] = Field(default_factory=lambda: [14])  # BARRIDO del periodo ATR
 
     model_config = {"populate_by_name": True}
 
@@ -66,6 +68,8 @@ class EstimateRequest(BaseModel):
     sl_choices: list[float] = Field(default_factory=list)
     tp_choices: list[float] = Field(default_factory=list)
     risk_choices: list[float] = Field(default_factory=list)
+    sl_mode: str = Field(default="fixed")
+    atr_periods: list[int] = Field(default_factory=lambda: [14])
 
 
 @router.get("/explore/meta", summary="Opciones del buscador (grids por tipo, choices, tope)")
@@ -86,13 +90,15 @@ async def explore_meta():
         "atr_sl_choices": ATR_SL_CHOICES,
         "atr_tp_choices": ATR_TP_CHOICES,
         "atr_period_default": 14,
+        "atr_period_choices": ATR_PERIOD_CHOICES,  # periodo ATR barrible (chips)
     }
 
 
 @router.post("/explore/estimate", summary="Estima el nº de configuraciones de una búsqueda")
 async def explore_estimate(req: EstimateRequest):
     configs = estimate_configs(req.pairs, req.types, req.timeframes,
-                               req.sl_choices, req.tp_choices, req.risk_choices)
+                               req.sl_choices, req.tp_choices, req.risk_choices,
+                               req.atr_periods, req.sl_mode)
     return {"configs": configs, "max_configs": MAX_CONFIGS, "over_limit": configs > MAX_CONFIGS}
 
 
@@ -105,7 +111,8 @@ async def explore_start(req: ExploreRequest):
         raise MT5Error("Ya hay una búsqueda en curso. Cancélala antes de iniciar otra.", code=409)
 
     configs = estimate_configs(req.pairs, req.types, req.timeframes,
-                               req.sl_choices, req.tp_choices, req.risk_choices)
+                               req.sl_choices, req.tp_choices, req.risk_choices,
+                               req.atr_periods, req.sl_mode)
     if configs == 0:
         raise MT5Error("La selección no produce ninguna configuración.", code=422)
     if configs > MAX_CONFIGS:
@@ -128,6 +135,7 @@ async def explore_start(req: ExploreRequest):
         "use_cache": req.use_cache,
         "sl_mode": req.sl_mode,
         "atr_period": req.atr_period,
+        "atr_periods": req.atr_periods,
     }
     return job.start(payload, client)
 

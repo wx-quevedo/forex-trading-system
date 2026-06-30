@@ -49,7 +49,9 @@ type SortKey =
     | 'pair' | 'type' | 'timeframe' | 'sl_pips' | 'tp_pips' | 'risk_percent'
     | 'capital_final' | 'costs' | 'return_pct' | 'net_pnl' | 'win_rate'
     | 'profit_factor' | 'max_drawdown_pct' | 'sharpe' | 'sortino' | 'calmar' | 'expectancy'
-    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime' | 'priority' | 'id';
+    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime' | 'priority' | 'id' | 'atr_period';
+
+const ATRPER_HELP = 'Periodo del ATR que produjo esta fila (modo ATR). Controla qué tan rápido el stop se adapta a la volatilidad: corto (7) = nervioso/reactivo, largo (21) = suave. Ordenar por aquí revela si el instrumento prefiere stops nerviosos o suaves. "—" en modo fijo.';
 
 // Fila con ID estable + métricas derivadas (Calmar/Expectativa R) del frontend.
 type AugRow = ExploreResultRow & { id: number; calmar: number | null; expectancy: number | null };
@@ -74,7 +76,8 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     const [risks, setRisks] = useState<number[]>(meta.risk_choices);
     // Modo SL/TP (Fase 1): fijo (pips) o adaptativo por ATR (multiplicadores).
     const [slMode, setSlMode] = useState<'fixed' | 'atr'>('fixed');
-    const [atrPeriod, setAtrPeriod] = useState<number>(meta.atr_period_default || 14);
+    const atrPeriodChoices = meta.atr_period_choices ?? [7, 14, 21];
+    const [atrPeriods, setAtrPeriods] = useState<number[]>([meta.atr_period_default || 14]);
     const slChoices = slMode === 'atr' ? meta.atr_sl_choices : meta.sl_choices;
     const tpChoices = slMode === 'atr' ? meta.atr_tp_choices : meta.tp_choices;
     const changeMode = (m: 'fixed' | 'atr') => {
@@ -115,7 +118,8 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
 
     // Estimación de combinaciones (cliente, con los grids del bridge).
     const gridSum = useMemo(() => selTypes.reduce((a, t) => a + (meta.grid_sizes[t] ?? 0), 0), [selTypes, meta.grid_sizes]);
-    const configs = pairs.length * selTfs.length * sls.length * tps.length * risks.length * gridSum;
+    const apFactor = slMode === 'atr' ? Math.max(1, atrPeriods.length) : 1;  // el periodo ATR multiplica el grid
+    const configs = pairs.length * selTfs.length * sls.length * tps.length * risks.length * gridSum * apFactor;
     const overLimit = configs > meta.max_configs;       // tope absoluto: bloquea
     const needsConfirm = configs > meta.warn_configs;   // grande: pide confirmación
     const canSearch = configs > 0 && !overLimit && !running;
@@ -174,7 +178,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                 pairs, types: selTypes, timeframes: selTfs,
                 date_from: period.date_from, date_to: period.date_to, capital,
                 sl_choices: sls, tp_choices: tps, risk_choices: risks, workers,
-                sl_mode: slMode, atr_period: atrPeriod,
+                sl_mode: slMode, atr_period: atrPeriods[0] ?? 14, atr_periods: atrPeriods,
             });
             setStatus(data as ExploreStatus);
             startPoll();
@@ -242,7 +246,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                 source: 'explorer',
                 pair: r.pair, type: r.type, timeframe: r.timeframe, params: r.params,
                 sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent, capital,
-                sl_mode: r.sl_mode ?? slMode, atr_period: atrPeriod,
+                sl_mode: r.sl_mode ?? slMode, atr_period: r.atr_period ?? atrPeriods[0] ?? 14,
                 backtest_from: context.date_from, backtest_to: context.date_to,
                 backtest_metrics: {
                     return_pct: r.return_pct, net_pnl: r.net_pnl, win_rate: r.win_rate,
@@ -264,7 +268,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         const combo = {
             type: r.type, pair: r.pair, timeframe: r.timeframe, indicators: r.params,
             risk: { sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent },
-            sl_mode: r.sl_mode ?? slMode, atr_period: atrPeriod,
+            sl_mode: r.sl_mode ?? slMode, atr_period: r.atr_period ?? atrPeriods[0] ?? 14,
             capital, period,
         };
         window.open(`/laboratory?combo=${encodeURIComponent(JSON.stringify(combo))}`, '_blank', 'noopener');
@@ -275,7 +279,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             ['ID', (r) => r.id], ['Prioridad', (r) => r.priority ?? ''],
             ['Par', (r) => r.pair], ['Tipo', (r) => r.type], ['Timeframe', (r) => r.timeframe],
             ['Parametros', (r) => paramsLabel(r.params)], ['SL', (r) => r.sl_pips], ['TP', (r) => r.tp_pips],
-            ['Riesgo%', (r) => r.risk_percent], ['CapitalFinal', (r) => r.capital_final], ['Costos', (r) => r.costs],
+            ['Riesgo%', (r) => r.risk_percent], ['ATRPeriodo', (r) => r.atr_period ?? ''], ['CapitalFinal', (r) => r.capital_final], ['Costos', (r) => r.costs],
             ['RetornoNeto%', (r) => r.return_pct], ['PnLNeto', (r) => r.net_pnl], ['WinRate%', (r) => (r.win_rate * 100).toFixed(1)],
             ['ProfitFactor', (r) => r.profit_factor ?? ''], ['MaxDD%', (r) => r.max_drawdown_pct],
             ['Sharpe', (r) => r.sharpe ?? ''], ['Sortino', (r) => r.sortino ?? ''],
@@ -393,13 +397,13 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                             </button>
                         ))}
                     </div>
-                    {slMode === 'atr' && (
-                        <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                            Periodo ATR
-                            <input type="number" min={2} max={200} value={atrPeriod} onChange={(e) => setAtrPeriod(Math.max(2, Number(e.target.value)))} className="w-20 rounded-md border border-border bg-bg-elevated px-2 py-1 font-mono text-xs text-text-primary" />
-                        </label>
-                    )}
                 </div>
+                {slMode === 'atr' && (
+                    <div className="mt-3">
+                        <SectionLabel>Periodo ATR (barrido)</SectionLabel>
+                        <ChipToggle options={atrPeriodChoices.map((v) => ({ value: v, label: String(v) }))} selected={atrPeriods} onToggle={(v) => toggle(atrPeriods, setAtrPeriods, v as number)} />
+                    </div>
+                )}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     <div><SectionLabel>{slMode === 'atr' ? 'SL (×ATR)' : 'SL (pips)'}</SectionLabel><ChipToggle options={slChoices.map((v) => ({ value: v, label: String(v) }))} selected={sls} onToggle={(v) => toggle(sls, setSls, v as number)} /></div>
                     <div><SectionLabel>{slMode === 'atr' ? 'TP (×ATR)' : 'TP (pips)'}</SectionLabel><ChipToggle options={tpChoices.map((v) => ({ value: v, label: String(v) }))} selected={tps} onToggle={(v) => toggle(tps, setTps, v as number)} /></div>
@@ -502,6 +506,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                     <Th k="sl_pips" label="SL" right s={sort} on={toggleSort} />
                                     <Th k="tp_pips" label="TP" right s={sort} on={toggleSort} />
                                     <Th k="risk_percent" label="Riesgo%" right s={sort} on={toggleSort} />
+                                    <Th k="atr_period" label="ATR per" right s={sort} on={toggleSort} help={ATRPER_HELP} />
                                     <Th k="capital_final" label="Cap. final" right s={sort} on={toggleSort} />
                                     <Th k="costs" label="Costos" right s={sort} on={toggleSort} />
                                     <Th k="return_pct" label="Ret. neto" right s={sort} on={toggleSort} />
@@ -543,6 +548,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.sl_pips}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.tp_pips}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.risk_percent}</td>
+                                            <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{r.atr_period ?? '—'}</td>
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.blown ? 'text-loss' : ''}`}>{fmtMoney(r.capital_final)}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs text-warning">{fmtMoney(r.costs)}</td>
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.return_pct >= 0 ? 'text-profit' : 'text-loss'}`}>{r.return_pct >= 0 ? '+' : ''}{r.return_pct}%</td>
@@ -646,7 +652,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             )}
 
             {/* Modal: guardar una combinación como estrategia */}
-            {saveRow && <SaveModal row={saveRow} schemas={schemas} atrPeriod={atrPeriod} onClose={() => setSaveRow(null)} />}
+            {saveRow && <SaveModal row={saveRow} schemas={schemas} onClose={() => setSaveRow(null)} />}
             {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} onClose={() => setScoreRow(null)} />}
         </AppLayout>
     );
@@ -774,7 +780,7 @@ function ScoreModal({ row, schemas, onClose }: { row: AugRow; schemas: StrategyS
     );
 }
 
-function SaveModal({ row, schemas, atrPeriod, onClose }: { row: ExploreResultRow; schemas: StrategySchemas; atrPeriod: number; onClose: () => void }) {
+function SaveModal({ row, schemas, onClose }: { row: ExploreResultRow; schemas: StrategySchemas; onClose: () => void }) {
     const [name, setName] = useState(`${schemas[row.type]?.label ?? row.type} ${row.pair} ${row.timeframe}`);
     const [description, setDescription] = useState(`Hallada en el explorador · robustez ${row.robustness} · out ${row.out_return}%`);
 
@@ -784,7 +790,7 @@ function SaveModal({ row, schemas, atrPeriod, onClose }: { row: ExploreResultRow
             name, description, type: row.type, pair: row.pair, timeframe: row.timeframe,
             indicators: row.params,
             // Persiste el modo SL/TP (ATR/fijo) en la estrategia para no perderlo al backtestear luego.
-            risk: { sl_pips: row.sl_pips, tp_pips: row.tp_pips, risk_percent: row.risk_percent, sl_mode: row.sl_mode ?? 'fixed', atr_period: atrPeriod },
+            risk: { sl_pips: row.sl_pips, tp_pips: row.tp_pips, risk_percent: row.risk_percent, sl_mode: row.sl_mode ?? 'fixed', atr_period: row.atr_period ?? 14 },
             from_strategy_id: null,
         });
     };

@@ -4,6 +4,7 @@ from .cache import ENGINE_VERSION
 from .engine import (
     ATR_SL_CHOICES,
     ATR_TP_CHOICES,
+    ATR_PERIOD_CHOICES,
     EXPLORE_TYPES,
     MAX_CONFIGS,
     RISK_CHOICES,
@@ -21,6 +22,7 @@ from .engine import (
 __all__ = [
     "ATR_SL_CHOICES",
     "ATR_TP_CHOICES",
+    "ATR_PERIOD_CHOICES",
     "ENGINE_VERSION",
     "EXPLORE_TYPES",
     "MAX_CONFIGS",

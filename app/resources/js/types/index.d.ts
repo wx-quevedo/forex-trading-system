@@ -385,6 +385,7 @@ export interface ExploreMeta {
     atr_sl_choices: number[];
     atr_tp_choices: number[];
     atr_period_default: number;
+    atr_period_choices?: number[];
 }
 
 export interface SavedSearch {
@@ -473,6 +474,7 @@ export interface ExploreResultRow {
     sl_mode?: string;
     regime?: RegimeLabel | null;
     regime_confidence?: number | null;
+    atr_period?: number | null;
     priority?: number;
     priority_breakdown?: ScoreBreakdown;
     priority_verdict?: string;

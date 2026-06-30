@@ -52,6 +52,9 @@ RISK_CHOICES = [0.5, 1.0, 2.0]
 # Multiplicadores de ATR (modo SL/TP adaptativo, Fase 1): SL=N×ATR, TP=M×ATR.
 ATR_SL_CHOICES = [1.5, 2.0, 3.0]
 ATR_TP_CHOICES = [2.0, 3.0, 4.0]
+# Periodo del ATR: ahora BARRIBLE (corto/estándar/largo). Controla qué tan rápido el
+# stop se adapta a la volatilidad. Cada valor = sus combinaciones (clave de caché propia).
+ATR_PERIOD_CHOICES = [7, 14, 21]
 SWEEP_TIMEFRAMES = ["M5", "M15", "H1", "H4"]
 EXPLORE_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined",
                  "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar"]
@@ -71,10 +74,14 @@ def grid_size(strategy_type: str) -> int:
 
 
 def estimate_configs(pairs: list[str], types: list[str], timeframes: list[str],
-                     sls: list, tps: list, risks: list) -> int:
-    """Nº total de configuraciones (cada una = un set de backtests in/out/full)."""
+                     sls: list, tps: list, risks: list,
+                     atr_periods: list | None = None, sl_mode: str = "fixed") -> int:
+    """Nº total de configuraciones (cada una = un set de backtests in/out/full).
+
+    En modo ATR el periodo ATR es una dimensión más del grid → ×len(atr_periods)."""
     per_group = sum(grid_size(t) for t in types)
-    return len(pairs) * len(timeframes) * len(sls) * len(tps) * len(risks) * per_group
+    ap_factor = len(atr_periods) if (sl_mode == "atr" and atr_periods) else 1
+    return len(pairs) * len(timeframes) * len(sls) * len(tps) * len(risks) * per_group * ap_factor
 
 
 def _to_dt(v: Any) -> datetime:
@@ -364,6 +371,7 @@ class ExploreJob:
             self.total = estimate_configs(
                 req["pairs"], req["types"], req["timeframes"],
                 req["sl_choices"], req["tp_choices"], req["risk_choices"],
+                req.get("atr_periods") or [req.get("atr_period") or 14], str(req.get("sl_mode") or "fixed").lower(),
             )
         # `sync` (solo tests): corre en el hilo del llamador → pandas en el hilo
         # principal (numpy/pandas en hilos secundarios es inestable en Windows).
@@ -444,7 +452,10 @@ class ExploreJob:
         risks = req["risk_choices"]
         capital = float(req.get("capital", 10000.0))
         sl_mode = str(req.get("sl_mode") or "fixed").lower()
-        atr_period = int(req.get("atr_period") or 14)
+        # Periodo ATR BARRIBLE: lista de valores (compat: cae a [atr_period] o [14]).
+        atr_periods = [int(x) for x in (req.get("atr_periods") or [req.get("atr_period") or 14])]
+        # En modo fijo el periodo es irrelevante (no entra en la clave ni en el motor) → 1 sola pasada.
+        aps = atr_periods if sl_mode == "atr" else [atr_periods[0]]
 
         # 1) MT5 SOLO aquí: descargar todas las velas necesarias una vez (reuso).
         candle_cache, costs_cache = self._fetch_all_candles(pairs, tfs, req["date_from"], req["date_to"], client, run_id)
@@ -456,13 +467,13 @@ class ExploreJob:
         #    cacheado es instantáneo; solo lo faltante se manda a calcular a workers.
         self._use_cache = bool(req.get("use_cache", True)) and self._cache is not None
         date_from, date_to = req["date_from"], req["date_to"]
-        configs_per_group_set = sum(grid_size(t) for t in types) * len(sls) * len(tps) * len(risks)
+        configs_per_group_set = sum(grid_size(t) for t in types) * len(sls) * len(tps) * len(risks) * len(aps)
 
         regime_cache: dict[tuple[str, str], dict[str, Any]] = {}
         plans: list[dict[str, Any]] = []
         for pair in pairs:
             cfg_base = {**costs_cache.get(pair, {}), "initial_balance": capital,
-                        "sl_mode": sl_mode, "atr_period": atr_period}
+                        "sl_mode": sl_mode}  # atr_period se fija por barrido (abajo)
             for tf in tfs:
                 candles = candle_cache.get((pair, tf), [])
                 if len(candles) < 120:  # grupo inviable → avanzar el progreso igual
@@ -489,22 +500,24 @@ class ExploreJob:
                     for sl in sls:
                         for tp in tps:
                             for rp in risks:
-                                cached, missing = [], list(combos)
-                                if self._use_cache:
-                                    keys = [make_cache_key(pair, stype, tf, p, sl, tp, rp, cfg_base, date_from, date_to, sl_mode, atr_period) for p in combos]
-                                    hit_map = self._cache.get_many(keys)
-                                    cached, missing = [], []
-                                    for p, k in zip(combos, keys):
-                                        hit = hit_map.get(k)
-                                        (cached if hit is not None else missing).append(hit if hit is not None else p)
-                                plans.append({
-                                    "ctx": (pair, stype, tf, sl, tp, rp),
-                                    "candles": candles, "cfg": cfg_base,
-                                    "from": date_from, "to": date_to,
-                                    "cached": cached, "missing": missing,
-                                    "grid": len(combos), "hits": len(cached), "misses": len(missing),
-                                    "regime": regime_cache.get((pair, tf), {}),
-                                })
+                                for ap in aps:  # periodo ATR como dimensión del grid
+                                    cfg = {**cfg_base, "atr_period": ap}
+                                    cached, missing = [], list(combos)
+                                    if self._use_cache:
+                                        keys = [make_cache_key(pair, stype, tf, p, sl, tp, rp, cfg, date_from, date_to, sl_mode, ap) for p in combos]
+                                        hit_map = self._cache.get_many(keys)
+                                        cached, missing = [], []
+                                        for p, k in zip(combos, keys):
+                                            hit = hit_map.get(k)
+                                            (cached if hit is not None else missing).append(hit if hit is not None else p)
+                                    plans.append({
+                                        "ctx": (pair, stype, tf, sl, tp, rp),
+                                        "candles": candles, "cfg": cfg, "atr_period": ap,
+                                        "from": date_from, "to": date_to,
+                                        "cached": cached, "missing": missing,
+                                        "grid": len(combos), "hits": len(cached), "misses": len(missing),
+                                        "regime": regime_cache.get((pair, tf), {}),
+                                    })
 
         if not plans:
             return
@@ -540,9 +553,12 @@ class ExploreJob:
         # cacheadas y nuevas por igual; no se guarda en caché (es del periodo).
         reg = plan.get("regime") or {}
         period_days = max(1.0, (_to_dt(plan["to"]) - _to_dt(plan["from"])).days)
+        is_atr = plan["cfg"].get("sl_mode") == "atr"
         for r in rows:
             r["regime"] = reg.get("regime")
             r["regime_confidence"] = reg.get("confidence")
+            # Periodo ATR usado en esta combinación (None en modo fijo). Barrido (Fase mejora).
+            r["atr_period"] = plan.get("atr_period") if is_atr else None
             # Prioridad (pauta para validar, NO veredicto). Metadato derivado: se
             # calcula sobre resultados existentes, no toca la clave de caché.
             sc = priority_score(r, period_days)

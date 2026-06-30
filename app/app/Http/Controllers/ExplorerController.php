@@ -46,6 +46,7 @@ class ExplorerController extends Controller
         'atr_sl_choices' => [1.5, 2.0, 3.0],
         'atr_tp_choices' => [2.0, 3.0, 4.0],
         'atr_period_default' => 14,
+        'atr_period_choices' => [7, 14, 21],
     ];
 
     public function __construct(
@@ -89,6 +90,8 @@ class ExplorerController extends Controller
             'workers' => ['nullable', 'integer', 'min:1', 'max:64'],
             'sl_mode' => ['nullable', Rule::in(['fixed', 'atr'])],
             'atr_period' => ['nullable', 'integer', 'min:2', 'max:200'],
+            'atr_periods' => ['nullable', 'array', 'min:1'],
+            'atr_periods.*' => ['integer', 'min:2', 'max:200'],
         ]);
 
         $payload = [
@@ -104,6 +107,7 @@ class ExplorerController extends Controller
             'workers' => isset($data['workers']) ? (int) $data['workers'] : null,
             'sl_mode' => $data['sl_mode'] ?? 'fixed',
             'atr_period' => isset($data['atr_period']) ? (int) $data['atr_period'] : 14,
+            'atr_periods' => isset($data['atr_periods']) ? array_map('intval', $data['atr_periods']) : [14],
         ];
 
         return $this->proxy(fn () => $this->bridge->exploreStart($payload));
