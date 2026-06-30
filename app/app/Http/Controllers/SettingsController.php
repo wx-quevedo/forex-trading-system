@@ -27,12 +27,21 @@ class SettingsController extends Controller
             'date_from' => ['required', 'date'],
             'date_to' => ['required', 'date', 'after_or_equal:date_from'],
             'capital' => ['required', 'numeric', 'min:1'],
+            // Rango de validación: posterior y SIN solape con el de optimización.
+            // `after_or_equal:date_to` BLOQUEA el solape por diseño (no solo avisa) →
+            // evita data leakage silencioso (validar sobre datos ya optimizados).
+            'val_date_from' => ['required', 'date', 'after_or_equal:date_to'],
+            'val_date_to' => ['required', 'date', 'after_or_equal:val_date_from'],
+        ], [
+            'val_date_from.after_or_equal' => 'La validación debe empezar en o después del fin de la optimización (sin solape, para no falsear el walk-forward con datos ya vistos).',
         ]);
 
         Setting::put(Setting::CONTEXT_KEY, [
             'date_from' => $data['date_from'],
             'date_to' => $data['date_to'],
             'capital' => (float) $data['capital'],
+            'val_date_from' => $data['val_date_from'],
+            'val_date_to' => $data['val_date_to'],
         ]);
 
         return redirect()->route('settings.analysis-context')

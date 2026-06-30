@@ -33,7 +33,7 @@ from ..explore import (
     grid_size,
     job,
 )
-from ..explore.engine import _default_cache
+from ..explore.engine import _default_cache, validate_topn
 from ..mt5_client import MT5Error, client
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -57,6 +57,22 @@ class ExploreRequest(BaseModel):
     sl_mode: str = Field(default="fixed")          # "fixed" (pips) | "atr" (N×ATR)
     atr_period: int = Field(default=14, ge=2, le=200)   # compat (valor único)
     atr_periods: list[int] = Field(default_factory=lambda: [14])  # BARRIDO del periodo ATR
+
+    model_config = {"populate_by_name": True}
+
+
+class ScoreRequest(BaseModel):
+    row: dict[str, Any] = Field(...)        # fila de resultado (métricas)
+    period_days: float = Field(default=365, gt=0)
+
+
+class ValidateRequest(BaseModel):
+    """Validación walk-forward del top-N en un rango POSTERIOR y separado."""
+    rows: list[dict[str, Any]] = Field(..., min_length=1, max_length=200)
+    date_from: datetime = Field(..., alias="val_from")
+    date_to: datetime = Field(..., alias="val_to")
+    capital: float = Field(default=10000.0, gt=0)
+    use_cache: bool = Field(default=True)
 
     model_config = {"populate_by_name": True}
 
@@ -148,6 +164,23 @@ async def explore_status():
 @router.get("/explore/results", summary="Reporte completo de la última búsqueda")
 async def explore_results():
     return job.snapshot(include_results=True)
+
+
+@router.post("/explore/score", summary="Desglose del score de Prioridad de UNA fila (on-demand para la modal)")
+async def explore_score(req: ScoreRequest):
+    from ..explore.scoring import priority_score
+    return priority_score(req.row, req.period_days)
+
+
+@router.post("/explore/validate", summary="Valida el top-N en un rango posterior (walk-forward, cacheado aparte)")
+def explore_validate(req: ValidateRequest):
+    # `def` (no async): es trabajo CPU (backtests) → FastAPI lo corre en threadpool y
+    # no bloquea el event loop. Reusa run_backtest sobre el rango de validación.
+    if req.date_from >= req.date_to:
+        raise MT5Error("El rango de validación es inválido (desde >= hasta).", code=422)
+    results = validate_topn(req.rows, req.date_from, req.date_to, req.capital,
+                            client, _default_cache, use_cache=req.use_cache)
+    return {"results": results}
 
 
 @router.post("/explore/cancel", summary="Cancela la búsqueda en curso")

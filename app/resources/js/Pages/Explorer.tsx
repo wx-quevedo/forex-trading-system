@@ -7,13 +7,14 @@ import SystemStatsCard from '@/Components/SystemStatsCard';
 import InfoTooltip from '@/Components/InfoTooltip';
 import { fmtMoney, fmtNumber } from '@/lib/format';
 import { REGIME_META, matchVerdict, regimeLabel } from '@/lib/regime';
+import { compliance, VERDICT as WF_VERDICT, days as daysBetween, type VerdictKey } from '@/lib/walkforward';
 
 const AZAR_HELP = 'Al probar miles de combinaciones, algunas parecerán ganadoras por pura suerte. Fíate de la robustez y del out-of-sample, no del retorno más alto. El reporte ordena por robustez por defecto.';
 const CAPITAL_HELP = 'Capital inicial del backtest. OJO: con capital bajo, el tamaño calculado por riesgo% cae al lote mínimo (0.01) y entonces 0.5/1/2% dan el MISMO resultado (no se distinguen). Usa un capital realista (p.ej. ≥ 2000) para que el riesgo% afecte de verdad.';
 const RISK_HELP = 'Riesgo por operación: define el tamaño de la posición (mayor riesgo → posición mayor → PnL y drawdown mayores). Si el capital es bajo, el tamaño se topa en el lote mínimo (0.01) y el riesgo% deja de diferenciar.';
 const INOUT_HELP = 'Retorno % del tramo. In-sample = tramo de entrenamiento (70%); Out-of-sample = tramo de validación que el barrido NO usó para elegir (30%). Lo bueno es que In y Out se PAREZCAN (consistencia). Si In es alto y Out bajo, la combinación está sobreajustada (overfit). La robustez mide justo esa consistencia.';
 const ATR_HELP = 'SL/TP por volatilidad real (ATR). Fijo: SL/TP en pips constantes. ATR: SL=N×ATR y TP=M×ATR, así el stop se adapta a la volatilidad de cada momento (más ancho cuando el mercado se mueve más). El riesgo en $ se mantiene constante (el tamaño se ajusta a la distancia del stop). Útil donde los stops fijos saltan por retrocesos violentos (p.ej. el oro).';
-import type { ExploreMeta, ExploreResultRow, ExploreStatus, SavedSearch, StrategySchemas } from '@/types';
+import type { ExploreMeta, ExploreResultRow, ExploreStatus, SavedSearch, ScoreBreakdown, StrategySchemas } from '@/types';
 
 const fmtEta = (s: number | null): string => {
     if (s == null) return '—';
@@ -28,9 +29,18 @@ interface Props {
     timeframes: string[];
     types: string[];
     meta: ExploreMeta;
-    context: { date_from: string; date_to: string; capital: number };
+    context: { date_from: string; date_to: string; capital: number; val_date_from: string; val_date_to: string };
     savedSearches: SavedSearch[];
 }
+
+// Resultado de la validación walk-forward de UNA fila (rango posterior del Contexto).
+type ValResult = {
+    ok: boolean;
+    ratio: number | null;       // % de cumplimiento (annVal/annBt × 100)
+    verdict: VerdictKey;
+    valCapital: number | null;  // capital final logrado en validación
+    reason?: string;            // si ok=false (sin velas, etc.)
+};
 
 const VERDICT: Record<string, { label: string; cls: string }> = {
     inside: { label: 'DENTRO del rango', cls: 'bg-profit/15 text-profit' },
@@ -49,12 +59,22 @@ type SortKey =
     | 'pair' | 'type' | 'timeframe' | 'sl_pips' | 'tp_pips' | 'risk_percent'
     | 'capital_final' | 'costs' | 'return_pct' | 'net_pnl' | 'win_rate'
     | 'profit_factor' | 'max_drawdown_pct' | 'sharpe' | 'sortino' | 'calmar' | 'expectancy'
-    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime' | 'priority' | 'id' | 'atr_period';
+    | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime' | 'priority' | 'id' | 'atr_period'
+    | 'wf_ratio' | 'wf_verdict' | 'wf_capital';
 
 const ATRPER_HELP = 'Periodo del ATR que produjo esta fila (modo ATR). Controla qué tan rápido el stop se adapta a la volatilidad: corto (7) = nervioso/reactivo, largo (21) = suave. Ordenar por aquí revela si el instrumento prefiere stops nerviosos o suaves. "—" en modo fijo.';
 
-// Fila con ID estable + métricas derivadas (Calmar/Expectativa R) del frontend.
-type AugRow = ExploreResultRow & { id: number; calmar: number | null; expectancy: number | null };
+// Fila con ID estable + métricas derivadas (Calmar/Expectativa R) del frontend +
+// (si se validó) los indicadores walk-forward del rango de validación.
+type AugRow = ExploreResultRow & {
+    id: number; calmar: number | null; expectancy: number | null;
+    wf_ratio?: number | null; wf_verdict?: VerdictKey; wf_capital?: number | null;
+    wf_ok?: boolean; wf_reason?: string;
+};
+
+const WFRATIO_HELP = 'Ratio de cumplimiento del walk-forward: retorno ANUALIZADO logrado en el rango de VALIDACIÓN (datos posteriores que el Explorador no optimizó) ÷ retorno anualizado prometido por el backtest, ×100. 100% = la validación cumplió lo prometido; <70% = se degrada; ≤0 = perdió en datos nuevos (FALLA). Vacío hasta pulsar "Validar top-N".';
+const WFVERDICT_HELP = 'Veredicto walk-forward (misma lógica que el Bot Histórico): CUMPLE (≥70% de lo prometido y en positivo), SE DEGRADA (rinde menos pero positivo), FALLA (pierde o quiebra en datos nuevos), sin referencia (el backtest no prometía nada). Validación independiente: rango POSTERIOR que el optimizador nunca vio (a diferencia del In/Out-sample, que es interno).';
+const WFCAP_HELP = 'Capital final LOGRADO en el rango de validación (datos posteriores), para comparar de un vistazo con el capital final del backtest. Vacío hasta validar.';
 
 const PRIORITY_HELP = 'Pauta de PRIORIZACIÓN para validar (0-100), NO un veredicto de rentabilidad. Combina todas las métricas normalizadas por riesgo (no premia el retorno absoluto) y penaliza la fragilidad (drawdown alto no-lineal, expectativa delgada, overfit, mismatch de régimen). "Prioridad #1" = valídala primero en walk-forward; la validación sigue siendo obligatoria. Clic en el número para ver el desglose.';
 
@@ -107,6 +127,14 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     const [saveRow, setSaveRow] = useState<ExploreResultRow | null>(null);
     const [scoreRow, setScoreRow] = useState<AugRow | null>(null);
     const [favAdded, setFavAdded] = useState<Set<string>>(new Set());
+
+    // --- Validación walk-forward del top-N (rango posterior del Contexto) ---
+    const [topN, setTopN] = useState(20);
+    const [valMap, setValMap] = useState<Record<number, ValResult>>({});
+    const [validating, setValidating] = useState(false);
+    const [valMsg, setValMsg] = useState<string | null>(null);
+    const valDays = useMemo(() => daysBetween(context.val_date_from, context.val_date_to), [context.val_date_from, context.val_date_to]);
+    const valOverlap = context.val_date_from < context.date_to;  // no debería pasar (UI Contexto lo bloquea)
     const [pageSize, setPageSize] = useState(50);
     const [page, setPage] = useState(1);
 
@@ -129,10 +157,17 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     }, []);
 
     const fetchResults = useCallback(async () => {
-        try {
-            const { data } = await window.axios.get('/explorer/results');
-            setResults((data.results ?? []) as ExploreResultRow[]);
-        } catch { /* deja el reporte previo */ }
+        // Reintentos: un fallo de red puntual no debe dejar la tabla vacía cuando el
+        // motor SÍ produjo resultados (síntoma: "no hay resultados" con datos reales).
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                const { data } = await window.axios.get('/explorer/results');
+                setResults((data.results ?? []) as ExploreResultRow[]);
+                return;
+            } catch {
+                await new Promise((r) => setTimeout(r, 600));
+            }
+        }
     }, []);
 
     const poll = useCallback(async () => {
@@ -173,6 +208,8 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         )) return;
         setError(null);
         setResults([]);
+        setValMap({});      // la validación previa ya no aplica a la corrida nueva
+        setValMsg(null);
         try {
             const { data } = await window.axios.post('/explorer/start', {
                 pairs, types: selTypes, timeframes: selTfs,
@@ -210,7 +247,13 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             const calmar = (r.blown || dd === 0) ? null : (r.return_pct * 365 / periodDays) / dd;
             const expectancy = r.expectancy_r ?? (r.sl_pips > 0 ? r.win_rate * (r.tp_pips / r.sl_pips) - (1 - r.win_rate) : null);
             // ID estable por corrida: orden de cómputo (results es append-only durante la corrida).
-            return { ...r, id: i + 1, calmar, expectancy };
+            const id = i + 1;
+            const v = valMap[id];
+            return {
+                ...r, id, calmar, expectancy,
+                wf_ratio: v?.ratio, wf_verdict: v?.verdict, wf_capital: v?.valCapital,
+                wf_ok: v?.ok, wf_reason: v?.reason,
+            };
         };
         let rows = results.map(aug);
         if (fVerdict !== 'all') rows = rows.filter((r) => r.verdict === fVerdict);
@@ -219,14 +262,20 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         if (fMatch !== 'all') rows = rows.filter((r) => matchVerdict(r.type, r.regime).verdict === fMatch);
         const { key, dir } = sort;
         const num = (v: number | null | undefined) => (v == null ? -Infinity : v);
+        // El veredicto WF ordena por gravedad (CUMPLE > DEGRADA > FALLA > sin ref. > sin validar).
+        const VRANK: Record<string, number> = { cumple: 4, degrada: 3, falla: 2, na: 1 };
         return [...rows].sort((a, b) => {
-            const av = a[key]; const bv = b[key];
             let cmp: number;
-            if (typeof av === 'string' || typeof bv === 'string') cmp = String(av).localeCompare(String(bv));
-            else cmp = num(av as number) - num(bv as number);
+            if (key === 'wf_verdict') {
+                cmp = (a.wf_verdict ? VRANK[a.wf_verdict] : 0) - (b.wf_verdict ? VRANK[b.wf_verdict] : 0);
+            } else {
+                const av = a[key]; const bv = b[key];
+                if (typeof av === 'string' || typeof bv === 'string') cmp = String(av).localeCompare(String(bv));
+                else cmp = num(av as number) - num(bv as number);
+            }
             return dir === 'asc' ? cmp : -cmp;
         });
-    }, [results, fVerdict, fPair, fType, fMatch, sort, periodDays]);
+    }, [results, fVerdict, fPair, fType, fMatch, sort, periodDays, valMap]);
 
     // Paginación: opera sobre el conjunto YA filtrado y ordenado (view).
     const pageCount = Math.max(1, Math.ceil(view.length / pageSize));
@@ -274,6 +323,56 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         window.open(`/laboratory?combo=${encodeURIComponent(JSON.stringify(combo))}`, '_blank', 'noopener');
     };
 
+    // Valida el TOP-N por Prioridad en el rango de validación del Contexto (posterior y
+    // sin solape). Recalcula cada estrategia sobre datos que el Explorador no optimizó y
+    // compara con lo prometido por el backtest → ratio + veredicto + capital logrado.
+    const validateTopN = async () => {
+        if (validating) return;
+        // Top-N por Prioridad sobre TODO el reporte (no el filtrado): id = orden de cómputo.
+        const ranked = results
+            .map((r, i) => ({ r, id: i + 1, p: r.priority ?? -Infinity }))
+            .sort((a, b) => b.p - a.p)
+            .slice(0, topN);
+        if (ranked.length === 0) return;
+        setValidating(true);
+        setValMsg(null);
+        try {
+            const { data } = await window.axios.post('/explorer/validate', {
+                rows: ranked.map(({ r, id }) => ({
+                    id, pair: r.pair, type: r.type, timeframe: r.timeframe, params: r.params,
+                    sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent,
+                    sl_mode: r.sl_mode ?? 'fixed', atr_period: r.atr_period ?? 14,
+                })),
+            });
+            const out = (data.results ?? []) as Array<Record<string, unknown>>;
+            const next: Record<number, ValResult> = {};
+            let ok = 0, nodata = 0;
+            ranked.forEach(({ r, id }, i) => {
+                const res = out[i] ?? {};
+                if (!res.ok) {
+                    nodata++;
+                    next[id] = { ok: false, ratio: null, verdict: 'na', valCapital: null, reason: String(res.reason ?? 'sin datos') };
+                    return;
+                }
+                ok++;
+                const valRet = Number(res.val_return_pct);
+                const c = compliance(r.return_pct, periodDays, valRet, valDays, Boolean(res.val_blown));
+                next[id] = { ok: true, ratio: c.ratio, verdict: c.verdict, valCapital: Number(res.val_final_balance) };
+            });
+            setValMap((prev) => ({ ...prev, ...next }));
+            setValMsg(`Validadas ${ok} de ${ranked.length} (rango ${context.val_date_from} → ${context.val_date_to})${nodata ? ` · ${nodata} sin velas en el rango` : ''}.`);
+            // Si no se está ordenando ya por una columna WF, ordena por cumplimiento para ver el resultado.
+            if (sort.key !== 'wf_ratio' && sort.key !== 'wf_verdict' && sort.key !== 'wf_capital') {
+                setSort({ key: 'wf_ratio', dir: 'desc' });
+            }
+        } catch (e) {
+            const err = e as { response?: { data?: { error?: string } } };
+            setValMsg(err.response?.data?.error ?? 'No se pudo validar (¿bridge accesible? ¿rango de validación con datos?).');
+        } finally {
+            setValidating(false);
+        }
+    };
+
     const exportCsv = () => {
         const cols: [string, (r: AugRow) => string | number][] = [
             ['ID', (r) => r.id], ['Prioridad', (r) => r.priority ?? ''],
@@ -288,6 +387,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
             ['InSample%', (r) => r.in_return], ['OutSample%', (r) => r.out_return], ['Robustez', (r) => r.robustness],
             ['Regimen', (r) => regimeLabel(r.regime)], ['Idoneidad', (r) => matchVerdict(r.type, r.regime).label],
             ['Veredicto', (r) => r.verdict],
+            ['WF_RatioCumpl%', (r) => (r.wf_ratio != null ? r.wf_ratio.toFixed(0) : '')],
+            ['WF_Veredicto', (r) => (r.wf_verdict ? WF_VERDICT[r.wf_verdict].label : '')],
+            ['WF_CapitalValidacion', (r) => (r.wf_capital != null ? r.wf_capital.toFixed(2) : '')],
         ];
         const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
         const csv = [cols.map((c) => esc(c[0])).join(','), ...view.map((r) => cols.map((c) => esc(c[1](r))).join(','))].join('\n');
@@ -485,6 +587,25 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                         </div>
                     </div>
 
+                    {/* Validación walk-forward del top-N en el rango posterior del Contexto. */}
+                    <div className="flex flex-wrap items-center gap-2 border-b border-border bg-bg-elevated/40 px-3 py-2.5">
+                        <span className="inline-flex items-center gap-1 text-sm font-medium text-text-primary">
+                            Validación walk-forward
+                            <InfoTooltip text={`Recalcula el top-N por Prioridad en el rango de VALIDACIÓN (${context.val_date_from} → ${context.val_date_to}), datos posteriores que el Explorador NO optimizó, y los compara con su backtest. Es validación INDEPENDIENTE (a diferencia del In/Out-sample interno). Configura el rango en Ajustes › Contexto.`} />
+                        </span>
+                        <label className="inline-flex items-center gap-1 text-sm text-text-secondary">
+                            Top-N
+                            <input type="number" min={1} max={200} value={topN} onChange={(e) => setTopN(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
+                                className="w-16 rounded-md border border-border bg-bg-elevated px-2 py-1 text-sm text-text-primary" />
+                        </label>
+                        <button type="button" onClick={validateTopN} disabled={validating || valOverlap || results.length === 0}
+                            className="rounded-md border border-accent px-3 py-1.5 text-sm font-semibold text-accent hover:bg-accent/10 disabled:opacity-50">
+                            {validating ? 'Validando…' : `Validar top-${topN}`}
+                        </button>
+                        {valOverlap && <span className="text-xs text-loss">El rango de validación solapa con la optimización (corrígelo en Contexto).</span>}
+                        {valMsg && !valOverlap && <span className="text-xs text-text-secondary">{valMsg}</span>}
+                    </div>
+
                     {results.every((r) => r.verdict !== 'inside') && (
                         <div className="border-b border-border bg-bg-elevated/50 px-3 py-2.5 text-xs text-text-secondary">
                             Ninguna combinación resultó robusta (DENTRO del rango) en esta búsqueda. Se muestran todas las probadas, ordenadas por
@@ -525,6 +646,9 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                     <Th k="regime" label="Régimen" s={sort} on={toggleSort} help={REGIME_HELP} />
                                     <th className="px-3 py-2 font-medium"><span className="inline-flex items-center gap-1">Idoneidad<InfoTooltip text={MATCH_HELP} /></span></th>
                                     <th className="px-3 py-2 font-medium">Veredicto</th>
+                                    <Th k="wf_ratio" label="WF cumpl." right s={sort} on={toggleSort} help={WFRATIO_HELP} />
+                                    <Th k="wf_verdict" label="WF veredicto" s={sort} on={toggleSort} help={WFVERDICT_HELP} />
+                                    <Th k="wf_capital" label="WF cap. val." right s={sort} on={toggleSort} help={WFCAP_HELP} />
                                     <th className="px-3 py-2" />
                                 </tr>
                             </thead>
@@ -579,6 +703,16 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                                     ? <span className="rounded bg-loss/20 px-1.5 py-0.5 text-[10px] font-semibold text-loss" title="La cuenta perdió todo el capital (quiebra). No es operable.">Cuenta quebrada</span>
                                                     : <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${v.cls}`} title={r.verdict_label}>{v.label}</span>}
                                             </td>
+                                            {/* Walk-forward (rango de validación posterior). Vacío hasta pulsar "Validar top-N". */}
+                                            <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.wf_ratio == null ? 'text-text-secondary' : r.wf_ratio >= 70 ? 'text-profit' : r.wf_ratio > 0 ? 'text-warning' : 'text-loss'}`}>
+                                                {r.wf_ok === false ? <span title={r.wf_reason}>sin datos</span> : r.wf_ratio != null ? `${r.wf_ratio.toFixed(0)}%` : '—'}
+                                            </td>
+                                            <td className="px-3 py-1.5">
+                                                {r.wf_verdict
+                                                    ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${WF_VERDICT[r.wf_verdict].cls}`}>{WF_VERDICT[r.wf_verdict].label}</span>
+                                                    : <span className="text-[10px] text-text-secondary">—</span>}
+                                            </td>
+                                            <td className="px-3 py-1.5 text-right font-mono text-xs">{r.wf_capital != null ? fmtMoney(r.wf_capital) : '—'}</td>
                                             <td className="px-3 py-1.5">
                                                 <div className="flex items-center gap-1">
                                                     <button type="button" onClick={() => addFavorite(r)} className={`rounded border px-1.5 py-1 text-[13px] leading-none ${favAdded.has(_row_key(r)) ? 'border-warning text-warning' : 'border-border text-text-secondary hover:text-warning'}`} title="Añadir a favoritos">
@@ -618,13 +752,24 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                 </section>
             )}
 
-            {status && status.status !== 'running' && results.length === 0 && status.total > 0 && (
+            {status && status.status !== 'running' && results.length === 0 && (
                 <div className="mt-5 text-center text-sm text-text-secondary">
                     {status.status === 'cancelled' ? 'Búsqueda cancelada.'
                         : status.status === 'error' ? `Error: ${status.error}`
-                        : status.skipped && status.skipped.length > 0
-                            ? 'No hay resultados: ningún (par · timeframe) tenía velas suficientes en este rango.'
-                            : 'No se evaluó ninguna combinación en el periodo.'}
+                        // El MOTOR sí produjo resultados (results_count) pero la UI aún no los
+                        // tiene cargados (fetch lento/fallido). NO es "sin resultados": reintentar.
+                        : (status.results_count ?? 0) > 0
+                            ? (
+                                <span className="inline-flex items-center gap-2">
+                                    Cargando {status.results_count} resultados…
+                                    <button type="button" onClick={fetchResults} className="rounded border border-accent px-2 py-0.5 text-xs text-accent hover:bg-accent/10">Reintentar</button>
+                                </span>
+                            )
+                        : status.total > 0
+                            ? (status.skipped && status.skipped.length > 0
+                                ? 'No hay resultados: todos los (par · timeframe) seleccionados estaban sin velas suficientes en el rango.'
+                                : 'No se evaluó ninguna combinación en el periodo.')
+                        : null}
                 </div>
             )}
 
@@ -653,7 +798,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
 
             {/* Modal: guardar una combinación como estrategia */}
             {saveRow && <SaveModal row={saveRow} schemas={schemas} onClose={() => setSaveRow(null)} />}
-            {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} onClose={() => setScoreRow(null)} />}
+            {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} periodDays={periodDays} onClose={() => setScoreRow(null)} />}
         </AppLayout>
     );
 }
@@ -744,8 +889,20 @@ function Th({ k, label, right, s, on, help }: { k: SortKey; label: string; right
     );
 }
 
-function ScoreModal({ row, schemas, onClose }: { row: AugRow; schemas: StrategySchemas; onClose: () => void }) {
-    const bd = row.priority_breakdown;
+function ScoreModal({ row, schemas, periodDays, onClose }: { row: AugRow; schemas: StrategySchemas; periodDays: number; onClose: () => void }) {
+    // El desglose se pide ON-DEMAND (no viaja en el payload masivo de resultados, que
+    // con muchas combinaciones reventaba la memoria del servidor).
+    const [bd, setBd] = useState<ScoreBreakdown | null>(null);
+    const [verdict, setVerdict] = useState<string>('');
+    const [loading, setLoading] = useState(true);
+    useEffect(() => {
+        let alive = true;
+        window.axios.post('/explorer/score', { row, period_days: periodDays })
+            .then(({ data }) => { if (alive) { setBd(data.breakdown ?? null); setVerdict(data.verdict ?? ''); } })
+            .catch(() => { /* deja el desglose vacío */ })
+            .finally(() => { if (alive) setLoading(false); });
+        return () => { alive = false; };
+    }, [row, periodDays]);
     const color = row.priority == null ? 'text-text-secondary' : row.priority >= 65 ? 'text-profit' : row.priority >= 40 ? 'text-warning' : 'text-loss';
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
@@ -756,6 +913,7 @@ function ScoreModal({ row, schemas, onClose }: { row: AugRow; schemas: StrategyS
                 </div>
                 <p className="mb-3 font-mono text-[11px] text-text-secondary">{paramsLabel(row.params)} · SL{row.sl_pips}/TP{row.tp_pips} · {row.risk_percent}%</p>
 
+                {loading && <div className="mb-3 text-xs text-text-secondary">Calculando desglose…</div>}
                 {bd && (
                     <>
                         <div className="mb-2">
@@ -772,7 +930,7 @@ function ScoreModal({ row, schemas, onClose }: { row: AugRow; schemas: StrategyS
                         </div>
                     </>
                 )}
-                {row.priority_verdict && <div className="mb-3 rounded-md border border-border bg-bg-elevated p-2.5 text-xs text-text-primary">{row.priority_verdict}</div>}
+                {verdict && <div className="mb-3 rounded-md border border-border bg-bg-elevated p-2.5 text-xs text-text-primary">{verdict}</div>}
                 <p className="mb-3 text-[11px] text-text-secondary">La Prioridad es una pauta para decidir QUÉ validar primero, no un veredicto de rentabilidad. Valida siempre en walk-forward (Bot Histórico) antes de operar.</p>
                 <button type="button" onClick={onClose} className="w-full rounded-md border border-border px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated">Cerrar</button>
             </div>

@@ -84,6 +84,98 @@ def estimate_configs(pairs: list[str], types: list[str], timeframes: list[str],
     return len(pairs) * len(timeframes) * len(sls) * len(tps) * len(risks) * per_group * ap_factor
 
 
+def validate_topn(rows: list[dict[str, Any]], date_from: Any, date_to: Any,
+                  capital: float, client: Any, cache: ExploreCache | None = None,
+                  use_cache: bool = True) -> list[dict[str, Any]]:
+    """Validación walk-forward del top-N en un rango POSTERIOR y separado.
+
+    Para cada fila (config exacta: tipo/params/SL/TP/riesgo/modo+periodo ATR) corre UN
+    backtest sobre el rango de validación (datos que el Explorador NO optimizó) y
+    devuelve métricas logradas. NO toca la caché de optimización: cachea aparte
+    (validation_cache) bajo la clave del rango de validación (distinta por el periodo).
+
+    Cada resultado: {ok, val_return_pct, val_final_balance, val_blown, val_total_trades,
+    val_candles} o {ok: False, reason} si el grupo no tiene velas suficientes."""
+    cache = cache if cache is not None else _default_cache
+    use_cache = use_cache and cache is not None
+
+    # 1) Descargar velas del rango de validación UNA vez por (par, tf) + costos por par.
+    candle_cache: dict[tuple[str, str], list] = {}
+    costs_cache: dict[str, dict] = {}
+    pairs = {str(r["pair"]) for r in rows}
+    tf_by_pair: dict[str, set] = {}
+    for r in rows:
+        tf_by_pair.setdefault(str(r["pair"]), set()).add(str(r["timeframe"]))
+    for pair in pairs:
+        try:
+            costs_cache[pair] = client.symbol_costs(pair) or {}
+        except Exception:  # noqa: BLE001
+            costs_cache[pair] = {}
+        for tf in tf_by_pair[pair]:
+            try:
+                candle_cache[(pair, tf)] = client.candles(pair, tf, date_from=date_from, date_to=date_to)
+            except Exception:  # noqa: BLE001 - sin velas: grupo vacío
+                candle_cache[(pair, tf)] = []
+
+    # 2) Por fila: cache → si no, backtest sobre el rango de validación.
+    out: list[dict[str, Any]] = []
+    pending: list[tuple[int, str, dict[str, Any]]] = []  # (idx, key, result) para cachear
+    keys: list[str | None] = []
+    for r in rows:
+        pair, stype, tf = str(r["pair"]), str(r["type"]), str(r["timeframe"])
+        params = dict(r.get("params", {}))
+        sl, tp, rp = float(r.get("sl_pips", 0)), float(r.get("tp_pips", 0)), float(r.get("risk_percent", 0))
+        sl_mode = str(r.get("sl_mode") or "fixed").lower()
+        ap = int(r.get("atr_period") or 14)
+        cfg = {**costs_cache.get(pair, {}), "initial_balance": float(capital),
+               "sl_mode": sl_mode, "atr_period": ap}
+        key = make_cache_key(pair, stype, tf, params, sl, tp, rp, cfg, date_from, date_to, sl_mode, ap)
+        keys.append(key)
+
+    hit_map = cache.get_validation_many([k for k in keys if k]) if use_cache else {}
+    for i, r in enumerate(rows):
+        key = keys[i]
+        if use_cache and key in hit_map:
+            out.append(hit_map[key])
+            continue
+        pair, stype, tf = str(r["pair"]), str(r["type"]), str(r["timeframe"])
+        candles = candle_cache.get((pair, tf), [])
+        if len(candles) < 120:
+            res = {"ok": False, "val_candles": len(candles),
+                   "reason": f"Sin velas suficientes de {tf} en el rango de validación ({len(candles)})."}
+            out.append(res)
+            if use_cache and key:
+                pending.append((i, key, res))
+            continue
+        params = dict(r.get("params", {}))
+        sl, tp, rp = float(r.get("sl_pips", 0)), float(r.get("tp_pips", 0)), float(r.get("risk_percent", 0))
+        sl_mode = str(r.get("sl_mode") or "fixed").lower()
+        ap = int(r.get("atr_period") or 14)
+        cfg = {**costs_cache.get(pair, {}), "initial_balance": float(capital),
+               "sl_mode": sl_mode, "atr_period": ap}
+        risk = {"sl_pips": sl, "tp_pips": tp, "risk_percent": rp, "sl_mode": sl_mode, "atr_period": ap}
+        try:
+            bt = run_backtest(stype, params, candles, symbol=pair, timeframe=tf, risk=risk, config=cfg)
+            m = bt["metrics"]
+            res = {
+                "ok": True,
+                "val_return_pct": round(float(m["return_pct"]), 2),
+                "val_final_balance": round(float(m["final_balance"]), 2),
+                "val_blown": bool(m.get("blown", False)),
+                "val_total_trades": int(m["total_trades"]),
+                "val_candles": len(candles),
+            }
+        except Exception as e:  # noqa: BLE001 - una fila inválida no aborta el lote
+            res = {"ok": False, "val_candles": len(candles), "reason": f"Backtest falló: {e}"}
+        out.append(res)
+        if use_cache and key:
+            pending.append((i, key, res))
+
+    if use_cache and pending:
+        cache.put_validation_many([(k, res) for _, k, res in pending])
+    return out
+
+
 def _to_dt(v: Any) -> datetime:
     """Normaliza una fecha (datetime|str ISO) a datetime, para medir el periodo."""
     if isinstance(v, datetime):
@@ -559,12 +651,11 @@ class ExploreJob:
             r["regime_confidence"] = reg.get("confidence")
             # Periodo ATR usado en esta combinación (None en modo fijo). Barrido (Fase mejora).
             r["atr_period"] = plan.get("atr_period") if is_atr else None
-            # Prioridad (pauta para validar, NO veredicto). Metadato derivado: se
-            # calcula sobre resultados existentes, no toca la clave de caché.
-            sc = priority_score(r, period_days)
-            r["priority"] = sc["score"]
-            r["priority_breakdown"] = sc["breakdown"]
-            r["priority_verdict"] = sc["verdict"]
+            # Prioridad (pauta para validar, NO veredicto). Solo el NÚMERO va en la fila
+            # (para ordenar/mostrar). El desglose+veredicto se piden on-demand al abrir la
+            # modal (/explore/score) — meterlos en cada fila inflaba el payload ~45% y con
+            # muchas combinaciones reventaba la memoria de PHP al servir /explorer/results.
+            r["priority"] = priority_score(r, period_days)["score"]
         pair, stype, tf = plan["ctx"][0], plan["ctx"][1], plan["ctx"][2]
         self._consume(run_id, rows, compute_s, plan["grid"], f"{pair} · {tf} · {stype}", plan["hits"], plan["misses"])
 

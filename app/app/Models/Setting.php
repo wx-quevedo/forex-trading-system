@@ -22,8 +22,12 @@ class Setting extends Model
     public const CONTEXT_KEY = 'analysis_context';
     public const CONTEXT_DEFAULTS = [
         'date_from' => '2025-01-01',
-        'date_to' => '2026-06-27',
+        'date_to' => '2025-12-31',
         'capital' => 10000,
+        // Rango de VALIDACIÓN walk-forward: posterior y SIN solape con el de optimización
+        // (datos que el Explorador no optimiza). Regla: val_date_from >= date_to.
+        'val_date_from' => '2026-01-01',
+        'val_date_to' => '2026-06-27',
     ];
 
     public static function get(string $key, mixed $default = null): mixed

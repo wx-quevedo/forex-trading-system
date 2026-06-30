@@ -2,7 +2,7 @@ import { Head, useForm } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 
 interface Props {
-    context: { date_from: string; date_to: string; capital: number };
+    context: { date_from: string; date_to: string; capital: number; val_date_from: string; val_date_to: string };
 }
 
 export default function AnalysisContext({ context }: Props) {
@@ -10,7 +10,10 @@ export default function AnalysisContext({ context }: Props) {
         date_from: context.date_from,
         date_to: context.date_to,
         capital: context.capital,
+        val_date_from: context.val_date_from,
+        val_date_to: context.val_date_to,
     });
+    const overlap = form.data.val_date_from < form.data.date_to;  // bloqueo visual del solape
 
     const submit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -41,9 +44,28 @@ export default function AnalysisContext({ context }: Props) {
                         </Field>
                     </div>
 
-                    {(form.errors.date_from || form.errors.date_to || form.errors.capital) && (
+                    <div>
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-accent">Rango de validación walk-forward (posterior, sin solape)</div>
+                        <p className="mb-2 text-xs text-text-secondary">Datos POSTERIORES que el Explorador no optimiza. El botón "Validar top-N" recalcula las mejores candidatas aquí y las compara con su backtest. Debe empezar en o después del fin de la optimización.</p>
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            <Field label="Validación desde">
+                                <input type="date" value={form.data.val_date_from} onChange={(e) => form.setData('val_date_from', e.target.value)} className="input font-mono" />
+                            </Field>
+                            <Field label="Validación hasta">
+                                <input type="date" value={form.data.val_date_to} onChange={(e) => form.setData('val_date_to', e.target.value)} className="input font-mono" />
+                            </Field>
+                        </div>
+                    </div>
+
+                    {overlap && (
                         <div className="rounded-md border border-loss/40 bg-loss/10 px-3 py-2 text-sm text-loss">
-                            {form.errors.date_from || form.errors.date_to || form.errors.capital}
+                            La validación SOLAPA con la optimización (empieza antes del {form.data.date_to}). Eso falsearía el walk-forward con datos ya vistos — no se permite. Ajusta el rango.
+                        </div>
+                    )}
+
+                    {(form.errors.date_from || form.errors.date_to || form.errors.capital || form.errors.val_date_from || form.errors.val_date_to) && (
+                        <div className="rounded-md border border-loss/40 bg-loss/10 px-3 py-2 text-sm text-loss">
+                            {form.errors.date_from || form.errors.date_to || form.errors.capital || form.errors.val_date_from || form.errors.val_date_to}
                         </div>
                     )}
 
@@ -53,7 +75,7 @@ export default function AnalysisContext({ context }: Props) {
                     </div>
 
                     <div className="flex items-center gap-3">
-                        <button type="submit" disabled={form.processing} className="rounded-md bg-accent px-5 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
+                        <button type="submit" disabled={form.processing || overlap} className="rounded-md bg-accent px-5 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
                             Guardar contexto
                         </button>
                         {form.recentlySuccessful && <span className="text-sm text-profit">Guardado.</span>}

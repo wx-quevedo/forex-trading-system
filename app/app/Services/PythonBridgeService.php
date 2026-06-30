@@ -318,6 +318,36 @@ class PythonBridgeService
         return $this->request('GET', '/explore/results', [], timeout: 60);
     }
 
+    /**
+     * Reporte completo como STRING JSON crudo (sin decodificar a array PHP). Para
+     * /explorer/results: con muchas combinaciones el reporte pesa decenas de MB; si
+     * PHP lo decodifica a array y lo re-serializa, agota la memoria (FatalError 128MB).
+     * Devolviendo el body crudo y pasándolo tal cual, se evita materializar el array.
+     */
+    public function exploreResultsRaw(): string
+    {
+        $response = $this->client(60)->get('/explore/results');
+        if ($response->failed()) {
+            $body = $response->json();
+            $message = $body['error'] ?? $body['detail'] ?? $response->body();
+            throw new BridgeException(is_string($message) ? $message : json_encode($message), $response->status(), $body);
+        }
+
+        return $response->body();
+    }
+
+    /** Desglose del score de Prioridad de UNA fila (on-demand para la modal). */
+    public function exploreScore(array $payload): array
+    {
+        return $this->request('POST', '/explore/score', ['json' => $payload], timeout: 30);
+    }
+
+    /** Valida el top-N en un rango posterior (walk-forward). Timeout amplio: corre N backtests. */
+    public function exploreValidate(array $payload): array
+    {
+        return $this->request('POST', '/explore/validate', ['json' => $payload], timeout: 180);
+    }
+
     /** Cancela la búsqueda en curso. */
     public function exploreCancel(): array
     {

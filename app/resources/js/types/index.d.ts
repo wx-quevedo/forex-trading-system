@@ -475,9 +475,7 @@ export interface ExploreResultRow {
     regime?: RegimeLabel | null;
     regime_confidence?: number | null;
     atr_period?: number | null;
-    priority?: number;
-    priority_breakdown?: ScoreBreakdown;
-    priority_verdict?: string;
+    priority?: number;  // el desglose (breakdown/verdict) se pide on-demand vía /explorer/score
     in_return: number;
     out_return: number;
     robustness: number;

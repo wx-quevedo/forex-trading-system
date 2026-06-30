@@ -9,6 +9,7 @@ import { fmtMoney, fmtNumber } from '@/lib/format';
 import { DISPLAY_TZ_OFFSET_SECONDS } from '@/lib/tz';
 import { REGIME_META, matchVerdict } from '@/lib/regime';
 import { type CalEvent, eventNear } from '@/lib/calendar';
+import { VERDICT, days, annualize, verdictOf } from '@/lib/walkforward';
 import type { BacktestMetrics, BacktestTrade, Candle, EquityPoint, Favorite, RegimeLabel } from '@/types';
 
 const REGIME_WF_HELP = 'Régimen del periodo de BACKTEST (snapshot del favorito) vs el régimen del periodo de OPERACIÓN. Si el régimen cambió (p.ej. de rango a tendencia), una estrategia de reversión puede degradarse aunque su lógica sea correcta: es un MISMATCH sobrevenido.';
@@ -27,30 +28,11 @@ interface SimResult {
 
 const PALETTE = ['#26A69A', '#5C9DFF', '#F59E0B', '#EF5350', '#AB7DF6', '#26C6DA', '#EC407A', '#9CCC65'];
 
-const VERDICT: Record<string, { label: string; cls: string }> = {
-    cumple: { label: 'CUMPLE', cls: 'bg-profit/15 text-profit' },
-    degrada: { label: 'SE DEGRADA', cls: 'bg-warning/15 text-warning' },
-    falla: { label: 'FALLA', cls: 'bg-loss/15 text-loss' },
-    na: { label: 'sin referencia', cls: 'bg-bg-elevated text-text-secondary' },
-};
-
 const CORR_HELP = 'Correlación de Pearson entre los retornos de cada par de estrategias en el periodo. +1 = se mueven idénticamente (diversificación FALSA: creías diversificar pero el riesgo está concentrado); 0 = independientes (diversificación REAL); negativo = se compensan. Recordatorio P6: en una crisis las correlaciones tienden a 1.0 y "todo se mueve junto".';
 const WF_HELP = 'Walk-forward: compara el periodo de OPERACIÓN (datos posteriores que la estrategia nunca vio) contra el BACKTEST de referencia. Como los periodos duran distinto, se ANUALIZAN los retornos para comparar. Veredicto: CUMPLE (logra ≥70% del retorno anualizado esperado y sigue en positivo), SE DEGRADA (rinde menos), FALLA (pierde o quiebra en datos nuevos).';
 
-const days = (from?: string | null, to?: string | null) =>
-    from && to ? Math.max(1, Math.round((+new Date(to) - +new Date(from)) / 86400000)) : 0;
-const annualize = (ret: number, d: number) => (d > 0 ? ret * 365 / d : ret);
 const paramsLabel = (p: Record<string, number | string>) =>
     Object.entries(p).map(([k, v]) => `${k.replace(/_/g, ' ')}=${v}`).join(', ');
-
-/** Veredicto walk-forward comparando operación (A) vs backtest (B), anualizados. */
-function verdictOf(annA: number, annB: number, blown: boolean): keyof typeof VERDICT {
-    if (annB <= 0) return 'na';            // el backtest no era rentable: nada que validar
-    if (blown || annA <= 0) return 'falla'; // pierde/quiebra en datos nuevos
-    const ratio = annA / annB;
-    if (ratio >= 0.7) return 'cumple';
-    return 'degrada';
-}
 
 function maxDrawdownPct(curve: { equity: number }[]): number {
     let peak = -Infinity, mdd = 0;

@@ -105,6 +105,9 @@ class ExploreCache:
                     c.execute(f"ALTER TABLE explore_cache ADD COLUMN {name} {sqltype}")
             c.execute("CREATE INDEX IF NOT EXISTS idx_cov ON explore_cache "
                       "(date_from, date_to, capital, symbol, type, timeframe)")
+            # Tabla SEPARADA para la validación walk-forward del top-N (rango posterior).
+            # No toca explore_cache (optimización) → la caché de optimización se conserva.
+            c.execute("CREATE TABLE IF NOT EXISTS validation_cache (key TEXT PRIMARY KEY, result TEXT NOT NULL)")
 
     def get_many(self, keys: list[str]) -> dict[str, dict[str, Any]]:
         if not keys:
@@ -142,6 +145,35 @@ class ExploreCache:
                 "sl, tp, risk, params_key, engine_version, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
+            )
+
+    # -- validación walk-forward (rango posterior) ------------------------
+    def get_validation_many(self, keys: list[str]) -> dict[str, dict[str, Any]]:
+        """Lee resultados de validación cacheados (tabla SEPARADA de optimización)."""
+        if not keys:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        with self._connect() as c:
+            chunk = 900
+            for i in range(0, len(keys), chunk):
+                part = keys[i:i + chunk]
+                q = "SELECT key, result FROM validation_cache WHERE key IN (%s)" % ",".join("?" * len(part))
+                for k, r in c.execute(q, part):
+                    try:
+                        out[k] = json.loads(r)
+                    except Exception:  # noqa: BLE001 - fila corrupta: recalcula
+                        pass
+        return out
+
+    def put_validation_many(self, items: list[tuple[str, dict[str, Any]]]) -> None:
+        """items: (key, val_result). Solo key→resultado (la validación no entra al mapa
+        de cobertura, así que no necesita las columnas de explore_cache)."""
+        if not items:
+            return
+        with self._connect() as c:
+            c.executemany(
+                "INSERT OR REPLACE INTO validation_cache (key, result) VALUES (?, ?)",
+                [(key, json.dumps(res)) for key, res in items],
             )
 
     # -- cobertura (Fase 8F) ----------------------------------------------

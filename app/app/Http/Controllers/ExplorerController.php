@@ -196,9 +196,62 @@ class ExplorerController extends Controller
         return $this->proxy(fn () => $this->bridge->exploreStatus());
     }
 
-    public function results(): JsonResponse
+    public function results(): \Illuminate\Http\Response|JsonResponse
     {
-        return $this->proxy(fn () => $this->bridge->exploreResults());
+        // Devuelve el JSON CRUDO del bridge sin decodificarlo a array PHP: el reporte
+        // puede pesar decenas de MB y materializarlo + re-serializarlo agota la memoria.
+        try {
+            return response($this->bridge->exploreResultsRaw(), 200)
+                ->header('Content-Type', 'application/json');
+        } catch (BridgeException $e) {
+            return response()->json(['error' => $e->getMessage()], $e->status);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
+        }
+    }
+
+    /** Desglose del score de Prioridad de una fila (on-demand para la modal A3). */
+    public function score(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'row' => ['required', 'array'],
+            'period_days' => ['nullable', 'numeric', 'min:1'],
+        ]);
+
+        return $this->proxy(fn () => $this->bridge->exploreScore([
+            'row' => $data['row'],
+            'period_days' => (float) ($data['period_days'] ?? 365),
+        ]));
+    }
+
+    /**
+     * Validación walk-forward del top-N en el rango de validación del Contexto
+     * (posterior y SIN solape con la optimización → datos que el Explorador no vio).
+     * Recibe las filas top-N (config exacta) y devuelve las métricas logradas.
+     */
+    public function validate(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'rows' => ['required', 'array', 'min:1', 'max:200'],
+            'rows.*' => ['array'],
+        ]);
+
+        $ctx = Setting::analysisContext();
+
+        // Defensa en profundidad: el rango de validación NO debe solapar la optimización.
+        // (La UI ya lo bloquea, pero el backend lo reafirma: el data leakage es grave.)
+        if ($ctx['val_date_from'] < $ctx['date_to']) {
+            return response()->json([
+                'error' => 'El rango de validación solapa con el de optimización. Ajusta el Contexto antes de validar.',
+            ], 422);
+        }
+
+        return $this->proxy(fn () => $this->bridge->exploreValidate([
+            'rows' => array_values($data['rows']),
+            'val_from' => Carbon::parse($ctx['val_date_from'])->toIso8601String(),
+            'val_to' => Carbon::parse($ctx['val_date_to'])->toIso8601String(),
+            'capital' => (float) $ctx['capital'],
+        ]));
     }
 
     public function cancel(): JsonResponse

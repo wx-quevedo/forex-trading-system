@@ -3,7 +3,8 @@
     "type": "module",
     "scripts": {
         "build": "vite build",
-        "dev": "vite"
+        "dev": "vite",
+        "test": "vitest run"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",
@@ -18,7 +19,8 @@
         "pusher-js": "^8.5.0",
         "tailwindcss": "^4.0.0",
         "typescript": "^6.0.3",
-        "vite": "^6.0.11"
+        "vite": "^6.0.11",
+        "vitest": "^4.1.9"
     },
     "dependencies": {
         "@inertiajs/react": "^3.4.0",

@@ -37,6 +37,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/explorer/start', [ExplorerController::class, 'start'])->name('explorer.start');
     Route::get('/explorer/status', [ExplorerController::class, 'status'])->name('explorer.status');
     Route::get('/explorer/results', [ExplorerController::class, 'results'])->name('explorer.results');
+    Route::post('/explorer/score', [ExplorerController::class, 'score'])->name('explorer.score');
+    Route::post('/explorer/validate', [ExplorerController::class, 'validate'])->name('explorer.validate');
     Route::post('/explorer/cancel', [ExplorerController::class, 'cancel'])->name('explorer.cancel');
     Route::get('/explorer/system-stats', [ExplorerController::class, 'systemStats'])->name('explorer.system-stats');
     Route::get('/explorer/coverage', [ExplorerController::class, 'coverage'])->name('explorer.coverage');
