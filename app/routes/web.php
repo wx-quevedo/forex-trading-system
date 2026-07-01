@@ -17,6 +17,18 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/', fn () => redirect('/dashboard'));
 
+// Health check para el watchdog externo (sin auth): prueba que la BD ESCRIBE (detecta
+// "database is locked") además de responder. 200 = sano; 503 = BD/app con problema.
+Route::get('/healthz', function () {
+    try {
+        \App\Models\Setting::query()->updateOrCreate(['key' => 'healthz'], ['value' => now()->toIso8601String()]);
+        \Illuminate\Support\Facades\DB::select('select 1');
+        return response()->json(['ok' => true, 'db' => 'writable', 'ts' => now()->toIso8601String()]);
+    } catch (\Throwable $e) {
+        return response()->json(['ok' => false, 'error' => $e->getMessage()], 503);
+    }
+});
+
 // --- Autenticación (un solo usuario) ---
 Route::middleware('guest')->group(function () {
     Route::get('/login', [AuthenticatedSessionController::class, 'create'])->name('login');
