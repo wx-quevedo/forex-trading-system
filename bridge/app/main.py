@@ -11,7 +11,9 @@ o simplemente:
 
 from __future__ import annotations
 
+import math
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,11 +36,36 @@ async def lifespan(app: FastAPI):
     client.shutdown()
 
 
+def _sanitize_nonfinite(o: Any) -> Any:
+    """Reemplaza NaN/Inf por None recursivamente.
+
+    Starlette serializa con json.dumps(allow_nan=False): un solo float no finito
+    (sharpe con varianza 0, calmar/profit_factor con denominador 0 — habituales en
+    barridos grandes de muchos tipos de estrategia) hace 500 al serializar la respuesta.
+    None es JSON válido y el frontend ya lo muestra como "—". Aplica a CUALQUIER endpoint
+    y también a filas ya cacheadas con NaN."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _sanitize_nonfinite(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_sanitize_nonfinite(v) for v in o]
+    return o
+
+
+class SafeJSONResponse(JSONResponse):
+    """JSONResponse que neutraliza NaN/Inf antes de serializar (evita 500 por allow_nan)."""
+
+    def render(self, content: Any) -> bytes:
+        return super().render(_sanitize_nonfinite(content))
+
+
 app = FastAPI(
     title="ForexBot MT5 Bridge",
     version=__version__,
     description="Puente FastAPI ↔ MetaTrader5 (Módulo 1).",
     lifespan=lifespan,
+    default_response_class=SafeJSONResponse,
 )
 
 app.add_middleware(

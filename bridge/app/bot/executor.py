@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..mt5_client import MT5Client
+from .order import compute_order, current_atr, gather_market
 from .state import BOT_MAGIC, is_bot_magic
 
 
@@ -28,39 +29,52 @@ def bot_positions(client: MT5Client, magic: int | None = None, symbol: str | Non
 
 def open_market(
     client: MT5Client,
-    symbol: str,
+    run: dict[str, Any],
     direction: str,
-    lot: float,
-    sl_pips: float,
-    tp_pips: float,
-    magic: int = BOT_MAGIC,
-    comment: str = "forexbot-bot",
+    candles: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Abre una posición de mercado con SL/TP calculados desde pips."""
+    """Abre una posición de mercado con FIDELIDAD al backtest: SL/TP por ATR (o pips) y
+    lote por riesgo%, vía el módulo compartido `compute_order` (el MISMO que el preview).
+
+    Si una guarda lo impide (ATR sin definir, stops por debajo del mínimo del bróker,
+    riesgo% < lote mínimo, o lote sobre el tope), devuelve {opened: False, reason} y NO
+    envía orden. Si abre, devuelve los datos de la orden enviada."""
+    symbol = run["symbol"]
     tick = client.price(symbol)
-    pip = pip_size(symbol)
-    if direction == "buy":
-        entry = tick["ask"]
-        sl = entry - sl_pips * pip if sl_pips else None
-        tp = entry + tp_pips * pip if tp_pips else None
-    else:
-        entry = tick["bid"]
-        sl = entry + sl_pips * pip if sl_pips else None
-        tp = entry - tp_pips * pip if tp_pips else None
+    entry = tick["ask"] if direction == "buy" else tick["bid"]
+    m = gather_market(client, symbol)
+    atr_value = current_atr(candles, int(run.get("atr_period") or 14)) if str(run.get("sl_mode") or "fixed").lower() == "atr" else None
+    balance = float(client.account_info().get("balance") or 0.0)
+
+    order = compute_order(run, direction, entry, atr_value, balance, m["prof"],
+                          m["digits"], m["stops_level"], m["volume_max"])
+    if not order.get("ok"):
+        return {"opened": False, "reason": order.get("reason"), "order": order}
 
     result = client.send_order(
         symbol=symbol,
         order_type=direction.upper(),
-        volume=lot,
-        sl=sl,
-        tp=tp,
-        comment=comment,
-        magic=magic,
+        volume=order["volume"],
+        sl=order["sl"],
+        tp=order["tp"],
+        comment=run.get("comment", "forexbot-bot"),
+        magic=int(run.get("magic", BOT_MAGIC)),
     )
+    result["opened"] = True
     result["ticket"] = int(result.get("order") or 0)
     result["entry_price"] = entry
-    result["sl"] = sl
-    result["tp"] = tp
+    result["sl"] = order["sl"]
+    result["tp"] = order["tp"]
+    result["volume"] = order["volume"]
+    result["warn"] = order.get("warn")
+    # Detalle de fidelidad para el journal persistente (qué calculó el ejecutor).
+    result["fidelity"] = {
+        "sl_mode": order.get("sl_mode"), "atr_period": order.get("atr_period"),
+        "atr_value": order.get("atr_value"), "sl_dist_pips": order.get("sl_dist_pips"),
+        "tp_dist_pips": order.get("tp_dist_pips"), "risk_lot": order.get("risk_lot"),
+        "risk_usd": order.get("risk_usd"), "risk_pct_actual": order.get("risk_pct_actual"),
+        "risk_percent_nominal": order.get("risk_percent"),
+    }
     return result
 
 

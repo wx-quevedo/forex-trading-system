@@ -60,6 +60,68 @@ class BotController extends Controller
         }
     }
 
+    /**
+     * Preview de fidelidad (Fase 1): SL/TP/lote que el ejecutor en vivo usaría para
+     * cada estrategia activa, calculado con el mismo módulo que el backtest, SIN operar.
+     */
+    public function preview(): JsonResponse
+    {
+        try {
+            return response()->json($this->bridge->botPreview());
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'No se pudo obtener el preview: ' . $e->getMessage()], 502);
+        }
+    }
+
+    /** Journal PERSISTENTE del bot (aperturas/cierres; sobrevive reinicios y corte de día). */
+    public function journalPersistent(Request $request): JsonResponse
+    {
+        $limit = (int) $request->integer('limit', 200);
+        try {
+            return response()->json($this->bridge->botJournal($limit));
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'No se pudo obtener el journal: ' . $e->getMessage()], 502);
+        }
+    }
+
+    /**
+     * Preview ad-hoc de favoritos ANTES de iniciarlos (diálogo de confirmar): muestra el
+     * SL/TP ATR y el lote por riesgo% REAL que se usaría, sin operar. Las specs se arman
+     * en el servidor desde el favorito (no se confía en el cliente).
+     */
+    public function previewSpec(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'favorite_ids' => ['required', 'array', 'min:1', 'max:50'],
+            'favorite_ids.*' => ['integer', 'exists:favorites,id'],
+            'max_lot' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'below_min' => ['nullable', Rule::in(['skip', 'floor'])],
+        ]);
+
+        $rows = Favorite::whereIn('id', $data['favorite_ids'])->get()->map(fn ($f) => [
+            'favorite_id' => $f->id,
+            'strategy_id' => $f->id,
+            'symbol' => $f->pair,
+            'timeframe' => $f->timeframe,
+            'strategy_type' => $f->type,
+            'params' => $f->params,
+            'sl_pips' => (float) $f->sl_pips,
+            'tp_pips' => (float) $f->tp_pips,
+            'risk_percent' => (float) ($f->risk_percent ?? 0),
+            'sl_mode' => $f->sl_mode ?? 'fixed',
+            'atr_period' => (int) ($f->atr_period ?? 14),
+            'lot' => 0.01,
+            'max_lot' => (float) ($data['max_lot'] ?? 0),
+            'below_min' => (string) ($data['below_min'] ?? 'skip'),
+        ])->all();
+
+        try {
+            return response()->json($this->bridge->botPreviewSpec($rows));
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'No se pudo obtener el preview: ' . $e->getMessage()], 502);
+        }
+    }
+
     public function start(Request $request): JsonResponse
     {
         $data = $request->validate([
@@ -73,12 +135,15 @@ class BotController extends Controller
             'cb_max_losses' => ['nullable', 'integer', 'min:0', 'max:50'],
             'cb_max_drawdown_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'portfolio_heat_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'max_lot' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'below_min' => ['nullable', Rule::in(['skip', 'floor'])],
+            'arm_expiry_hours' => ['nullable', 'numeric', 'min:0', 'max:168'],
         ]);
 
         $strategy = Strategy::findOrFail($data['strategy_id']);
 
         try {
-            $status = $this->startStrategy($strategy, (float) $data['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], $data['timeframe'] ?? null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0));
+            $status = $this->startStrategy($strategy, (float) $data['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], $data['timeframe'] ?? null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0), (float) ($data['max_lot'] ?? 0), (string) ($data['below_min'] ?? 'skip'), (float) ($data['arm_expiry_hours'] ?? 24));
         } catch (BridgeException $e) {
             return response()->json(['error' => $e->getMessage()], $e->status);
         } catch (Throwable $e) {
@@ -106,6 +171,9 @@ class BotController extends Controller
             'cb_max_losses' => ['nullable', 'integer', 'min:0', 'max:50'],
             'cb_max_drawdown_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'portfolio_heat_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'max_lot' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'below_min' => ['nullable', Rule::in(['skip', 'floor'])],
+            'arm_expiry_hours' => ['nullable', 'numeric', 'min:0', 'max:168'],
         ]);
 
         $errors = [];
@@ -129,8 +197,8 @@ class BotController extends Controller
                             'sl_pips' => $fav->sl_pips,
                             'tp_pips' => $fav->tp_pips,
                             'risk_percent' => $fav->risk_percent,
-                            // Preserva el modo SL/TP del favorito en la definición (el
-                            // ejecutor en vivo aún opera en pips fijos; integridad a futuro).
+                            // Modo SL/TP + periodo ATR del favorito: el ejecutor en vivo los
+                            // usa para operar por ATR + riesgo% con FIDELIDAD al backtest.
                             'sl_mode' => $fav->sl_mode ?? 'fixed',
                             'atr_period' => $fav->atr_period ?? 14,
                         ],
@@ -141,7 +209,7 @@ class BotController extends Controller
             );
 
             try {
-                $this->startStrategy($strategy, (float) $row['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0));
+                $this->startStrategy($strategy, (float) $row['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0), (float) ($data['max_lot'] ?? 0), (string) ($data['below_min'] ?? 'skip'), (float) ($data['arm_expiry_hours'] ?? 24));
             } catch (Throwable $e) {
                 $errors[] = "{$fav->name}: " . $e->getMessage();
             }
@@ -155,7 +223,7 @@ class BotController extends Controller
      * cierra corridas previas, crea la corrida, llama al bridge y notifica/loguea.
      * Lanza si el bridge falla (el caller decide la respuesta).
      */
-    private function startStrategy(Strategy $strategy, float $lot, float $dailyLossLimit, int $maxPositions, ?string $timeframe, bool $newsFilter = false, int $newsWindowMin = 15, int $cbMaxLosses = 0, float $cbMaxDrawdownPct = 0.0, float $portfolioHeatPct = 0.0): array
+    private function startStrategy(Strategy $strategy, float $lot, float $dailyLossLimit, int $maxPositions, ?string $timeframe, bool $newsFilter = false, int $newsWindowMin = 15, int $cbMaxLosses = 0, float $cbMaxDrawdownPct = 0.0, float $portfolioHeatPct = 0.0, float $maxLot = 0.0, string $belowMin = 'skip', float $armExpiryHours = 24.0): array
     {
         $params = $strategy->parameters ?? [];
         $risk = $params['risk'] ?? [];
@@ -184,6 +252,15 @@ class BotController extends Controller
                 'lot' => $lot,
                 'sl_pips' => (float) ($risk['sl_pips'] ?? 20),
                 'tp_pips' => (float) ($risk['tp_pips'] ?? 40),
+                // Fidelidad con el backtest (ATR en vivo): el ejecutor necesita el modo
+                // SL/TP, el periodo ATR y el riesgo% para dimensionar igual que el backtest.
+                'sl_mode' => $risk['sl_mode'] ?? 'fixed',
+                'atr_period' => (int) ($risk['atr_period'] ?? 14),
+                'risk_percent' => (float) ($risk['risk_percent'] ?? 0),
+                // Guardas de sizing (Fase 2): tope de lote y política si riesgo% < mínimo.
+                'max_lot' => $maxLot,
+                'below_min' => $belowMin,
+                'arm_expiry_hours' => $armExpiryHours,
                 'daily_loss_limit' => $dailyLossLimit,
                 'max_positions' => $maxPositions,
                 'news_filter' => $newsFilter,

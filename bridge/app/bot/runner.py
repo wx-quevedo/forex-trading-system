@@ -13,7 +13,7 @@ from typing import Any
 
 from ..mt5_client import MT5Error, client
 from ..strategy import evaluate_strategy
-from . import executor
+from . import executor, journal
 from .guards import can_open, circuit_breaker_tripped, daily_limit_hit
 from .portfolio import heat_would_exceed, position_risk
 from .state import bot_state, magic_for
@@ -23,6 +23,19 @@ _DEFAULT_POLL = 10.0
 
 def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _hours_since(iso: str | None) -> float:
+    """Horas transcurridas desde un timestamp ISO. Sin timestamp → 0 (recién armada)."""
+    if not iso:
+        return 0.0
+    try:
+        t = datetime.fromisoformat(iso)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(tz=timezone.utc) - t).total_seconds() / 3600.0
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def _infer_close_reason(rec: dict[str, Any], close_price: float | None) -> str:
@@ -81,6 +94,7 @@ class BotRunner:
                 run["status"] = "running"
                 run["stop_reason"] = None
                 run["error"] = None
+                run["last_activity"] = _now()  # re-armada ahora → reinicia la caducidad (C)
                 # Reanudar limpia los contadores del circuit breaker: si no, una
                 # estrategia pausada por racha se volvería a pausar al instante.
                 bot_state.reset_circuit_counters(run)
@@ -183,6 +197,15 @@ class BotRunner:
     def _process_run(self, run: dict[str, Any]) -> None:
         bot_state.roll_day_if_needed(run)
         self._reconcile(run)
+        # Caducidad del arme (C): si lleva ARMADA sin abrir ninguna posición más de
+        # arm_expiry_hours, se auto-pausa (evita quedar armada indefinidamente sin recordarlo).
+        exp_h = float(run.get("arm_expiry_hours", 0) or 0)
+        if exp_h > 0 and not run.get("open_tickets") and _hours_since(run.get("last_activity")) >= exp_h:
+            run["status"] = "paused"
+            run["stop_reason"] = (f"Arme caducado: {exp_h:.0f}h sin señal. Pausada por seguridad; "
+                                  "reanúdala cuando quieras volver a armarla.")
+            journal.append("arm_expired", run, {"hours": exp_h})
+            return
         floating, daily = self._pnl(run)
         if daily_limit_hit(run["daily_loss_limit"], daily):
             run["status"] = "stopped"
@@ -261,13 +284,20 @@ class BotRunner:
             close_price = (info or {}).get("close_price")
             forced = run["pending_reasons"].pop(ticket, None)
             reason = forced or _infer_close_reason(rec, close_price)
+            pnl = (info or {}).get("pnl", 0.0)
             bot_state.record_closed_trade(run, {
                 "ticket": ticket, "symbol": rec.get("symbol", run["symbol"]),
                 "direction": rec.get("direction"), "volume": rec.get("volume"),
                 "open_price": rec.get("open_price"), "close_price": close_price,
                 "sl": rec.get("sl"), "tp": rec.get("tp"), "open_at": rec.get("open_at"),
-                "close_at": _now(), "pnl": (info or {}).get("pnl", 0.0), "close_reason": reason,
+                "close_at": _now(), "pnl": pnl, "close_reason": reason,
                 "open_reason": rec.get("open_reason"), "open_indicators": rec.get("open_indicators"),
+            })
+            run["last_activity"] = _now()  # actividad reciente (renueva la caducidad del arme)
+            journal.append("close", run, {  # journal PERSISTENTE del cierre
+                "ticket": ticket, "direction": rec.get("direction"), "volume": rec.get("volume"),
+                "open_price": rec.get("open_price"), "close_price": close_price,
+                "sl": rec.get("sl"), "tp": rec.get("tp"), "pnl": pnl, "close_reason": reason,
             })
 
     def _evaluate(self, run: dict[str, Any]) -> None:
@@ -321,16 +351,36 @@ class BotRunner:
                         why = why_heat
                 if ok:
                     try:
-                        res = executor.open_market(client, run["symbol"], signal, run["lot"], run["sl_pips"], run["tp_pips"], magic=run["magic"], comment=run["comment"])
-                        ticket = int(res.get("ticket") or 0)
-                        if ticket:
-                            run["open_tickets"][ticket] = {
-                                "symbol": run["symbol"], "direction": signal, "volume": run["lot"],
-                                "open_price": res.get("entry_price"), "sl": res.get("sl"), "tp": res.get("tp"),
-                                "open_at": _now(), "open_reason": reason, "open_indicators": indicators,
-                            }
-                        executed = True
-                        exec_reason = reason
+                        # Fidelidad: SL/TP ATR + lote por riesgo% vía el módulo compartido.
+                        # Pasa las velas ya descargadas (para el ATR) + el run completo.
+                        res = executor.open_market(client, run, signal, closed)
+                        if not res.get("opened"):
+                            # Una guarda lo impidió (ATR/stops/riesgo%<mínimo/tope). No es un
+                            # error: es una protección. Se registra como razón de no-ejecución.
+                            executed = False
+                            exec_reason = res.get("reason") or "No se abrió (protección de sizing)."
+                            journal.append("blocked", run, {"direction": signal, "reason": exec_reason})
+                        else:
+                            ticket = int(res.get("ticket") or 0)
+                            fid = res.get("fidelity") or {}
+                            if ticket:
+                                run["open_tickets"][ticket] = {
+                                    "symbol": run["symbol"], "direction": signal, "volume": res.get("volume"),
+                                    "open_price": res.get("entry_price"), "sl": res.get("sl"), "tp": res.get("tp"),
+                                    "open_at": _now(), "open_reason": reason, "open_indicators": indicators,
+                                    "fidelity": fid,
+                                }
+                            # Arme "usado": abrió una posición → renueva la actividad (caducidad C).
+                            run["last_activity"] = _now()
+                            # Journal PERSISTENTE de la apertura (sobrevive reinicios/corte de día).
+                            journal.append("open", run, {
+                                "ticket": ticket, "direction": signal, "volume": res.get("volume"),
+                                "entry": res.get("entry_price"), "sl": res.get("sl"), "tp": res.get("tp"),
+                                **fid, "warn": res.get("warn"),
+                            })
+                            executed = True
+                            exec_reason = (res.get("warn") + " ") if res.get("warn") else ""
+                            exec_reason += reason
                     except MT5Error as exc:
                         executed = False
                         exec_reason = f"Orden rechazada: {exc.message}"

@@ -198,6 +198,13 @@ class MT5Client:
             "swap_short": float(info.swap_short),
             "trade_mode": int(info.trade_mode),
             "visible": bool(info.visible),
+            # Distancia MÍNIMA de SL/TP exigida por el bróker, en PUNTOS (0 = sin límite).
+            # El preview ATR la usa para marcar candidatas cuyos stops serían rechazados.
+            "trade_stops_level": int(getattr(info, "trade_stops_level", 0) or 0),
+            # Volumen máximo/mínimo/escalón del símbolo (guarda de tope del ejecutor).
+            "volume_max": float(getattr(info, "volume_max", 0.0) or 0.0),
+            "volume_min": float(getattr(info, "volume_min", 0.0) or 0.0),
+            "volume_step": float(getattr(info, "volume_step", 0.0) or 0.0),
         }
 
     def symbol_session(self, symbol: str) -> dict[str, Any]:

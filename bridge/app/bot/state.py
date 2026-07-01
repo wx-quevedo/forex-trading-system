@@ -54,6 +54,17 @@ def new_run(config: dict[str, Any], magic: int) -> dict[str, Any]:
         "lot": float(config.get("lot", 0.01)),
         "sl_pips": float(config.get("sl_pips", 20)),
         "tp_pips": float(config.get("tp_pips", 40)),
+        # Fidelidad con el backtest (ATR en vivo): modo SL/TP + periodo ATR + riesgo%.
+        # En modo ATR, sl_pips/tp_pips se interpretan como multiplicadores N/M.
+        "sl_mode": str(config.get("sl_mode") or "fixed").lower(),
+        "atr_period": int(config.get("atr_period", 14) or 14),
+        "risk_percent": float(config.get("risk_percent", 0) or 0),
+        # Guardas de sizing (Fase 2).
+        "max_lot": float(config.get("max_lot", 0) or 0),
+        "below_min": str(config.get("below_min") or "skip").lower(),
+        # Caducidad del arme (C): auto-pausa si lleva N horas ARMADA sin abrir (0 = off).
+        "arm_expiry_hours": float(config.get("arm_expiry_hours", 24) or 0),
+        "last_activity": _now_iso(),  # armada ahora; se renueva al abrir/cerrar/reanudar
         "daily_loss_limit": float(config.get("daily_loss_limit", 100)),
         "max_positions": int(config.get("max_positions", 1)),
         # Capa defensiva (Fase 6): pausar en ventana de noticia de alto impacto.
@@ -247,7 +258,7 @@ class BotState:
                     "started_at": run.get("started_at"),
                     "magic": magic,
                     "strategy": {"type": run["strategy_type"], "params": run["params"], "symbol": run["symbol"], "timeframe": run["timeframe"]},
-                    "config": {"lot": run["lot"], "sl_pips": run["sl_pips"], "tp_pips": run["tp_pips"], "daily_loss_limit": run["daily_loss_limit"], "max_positions": run["max_positions"], "news_filter": run.get("news_filter", False), "news_window_min": run.get("news_window_min", 15), "cb_max_losses": run.get("cb_max_losses", 0), "cb_max_drawdown_pct": run.get("cb_max_drawdown_pct", 0)},
+                    "config": {"lot": run["lot"], "sl_pips": run["sl_pips"], "tp_pips": run["tp_pips"], "sl_mode": run.get("sl_mode", "fixed"), "atr_period": run.get("atr_period", 14), "risk_percent": run.get("risk_percent", 0), "max_lot": run.get("max_lot", 0), "below_min": run.get("below_min", "skip"), "arm_expiry_hours": run.get("arm_expiry_hours", 0), "daily_loss_limit": run["daily_loss_limit"], "max_positions": run["max_positions"], "news_filter": run.get("news_filter", False), "news_window_min": run.get("news_window_min", 15), "cb_max_losses": run.get("cb_max_losses", 0), "cb_max_drawdown_pct": run.get("cb_max_drawdown_pct", 0)},
                     "realized_pnl_today": round(realized, 2),
                     "floating_pnl": round(floating, 2),
                     "daily_pnl": round(realized + floating, 2),

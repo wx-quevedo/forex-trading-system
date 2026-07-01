@@ -8,7 +8,10 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ..auth import require_api_key
-from ..bot import bot_runner
+from ..bot import bot_runner, journal as bot_journal
+from ..bot.preview import preview_all
+from ..bot.state import bot_state
+from ..mt5_client import client
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
@@ -23,6 +26,16 @@ class StartRequest(BaseModel):
     lot: float = Field(default=0.01, gt=0)
     sl_pips: float = Field(default=20, ge=0)
     tp_pips: float = Field(default=40, ge=0)
+    # Fidelidad con el backtest: modo SL/TP (fijo pips o N×ATR), periodo ATR y riesgo%
+    # para dimensionar por riesgo (no lote fijo). El lote queda como respaldo.
+    sl_mode: str = Field(default="fixed")
+    atr_period: int = Field(default=14, ge=2, le=200)
+    risk_percent: float = Field(default=0.0, ge=0, le=100)
+    # Guardas de sizing (Fase 2): tope de lote configurable (0 = solo el del bróker) y
+    # política si el riesgo% pide menos que el lote mínimo ("skip" no abre / "floor" mínimo).
+    max_lot: float = Field(default=0.0, ge=0)
+    below_min: str = Field(default="skip")
+    arm_expiry_hours: float = Field(default=24.0, ge=0, le=168)  # auto-pausa si no abre (0 = off)
     daily_loss_limit: float = Field(default=100, ge=0)
     max_positions: int = Field(default=1, ge=1, le=20)
 
@@ -36,6 +49,30 @@ class TargetRequest(BaseModel):
 async def bot_start(req: StartRequest):
     bot_runner.add(req.model_dump())
     return bot_runner.status()
+
+
+@router.get("/bot/preview", summary="Preview de fidelidad (Fase 1): SL/TP/lote que el ejecutor usaría, SIN operar")
+def bot_preview():
+    # `def` (no async): hace IO MT5 + backtests → FastAPI lo corre en threadpool.
+    # Copia los runs bajo lock y suelta el lock antes del IO pesado.
+    with bot_state.lock():
+        runs = [dict(r) for r in bot_state.runs.values()]
+    return {"previews": preview_all(client, runs)}
+
+
+class PreviewSpecRequest(BaseModel):
+    """Preview AD-HOC (estrategias aún no iniciadas, p.ej. el diálogo de confirmar)."""
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+
+
+@router.post("/bot/preview", summary="Preview de fidelidad de specs ad-hoc (antes de iniciar), SIN operar")
+def bot_preview_spec(req: PreviewSpecRequest):
+    return {"previews": preview_all(client, req.rows)}
+
+
+@router.get("/bot/journal", summary="Journal PERSISTENTE del bot (aperturas/cierres) — sobrevive reinicios y corte de día")
+def bot_journal_read(limit: int = 200):
+    return {"entries": bot_journal.tail(max(1, min(1000, limit)))}
 
 
 @router.post("/bot/pause", summary="Pausa una estrategia (o todas)")

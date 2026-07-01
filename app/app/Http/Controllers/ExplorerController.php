@@ -196,18 +196,29 @@ class ExplorerController extends Controller
         return $this->proxy(fn () => $this->bridge->exploreStatus());
     }
 
-    public function results(): \Illuminate\Http\Response|JsonResponse
+    public function results(): \Symfony\Component\HttpFoundation\StreamedResponse|JsonResponse
     {
-        // Devuelve el JSON CRUDO del bridge sin decodificarlo a array PHP: el reporte
-        // puede pesar decenas de MB y materializarlo + re-serializarlo agota la memoria.
+        // CANALIZA (stream) el body del bridge en trozos sin materializarlo en memoria:
+        // el reporte puede pesar decenas de MB (decenas de miles de filas) y tenerlo
+        // entero como string PHP agota los 128 MB. Así la memoria de PHP es plana sea
+        // cual sea el tamaño del reporte (escala a cualquier nº de filas).
         try {
-            return response($this->bridge->exploreResultsRaw(), 200)
-                ->header('Content-Type', 'application/json');
+            $stream = $this->bridge->exploreResultsStream();
         } catch (BridgeException $e) {
             return response()->json(['error' => $e->getMessage()], $e->status);
         } catch (\Throwable $e) {
             return response()->json(['error' => 'Bridge no accesible: ' . $e->getMessage()], 502);
         }
+
+        return response()->stream(function () use ($stream) {
+            while (!$stream->eof()) {
+                echo $stream->read(262144);  // trozos de 256 KB
+            }
+            $stream->close();
+        }, 200, [
+            'Content-Type' => 'application/json',
+            'X-Accel-Buffering' => 'no',  // evita que nginx/proxy bufferice el stream
+        ]);
     }
 
     /** Desglose del score de Prioridad de una fila (on-demand para la modal A3). */

@@ -16,6 +16,8 @@ import pandas as pd
 
 from ..strategy import build_strategy, signal_series
 from ..strategy.indicators import atr as atr_series
+from .sizing import sl_tp_distances, sl_tp_prices
+from .sizing import size_for as _size_for
 
 # Muchos backtests seguidos acumulan basura de pandas/numpy y, en Windows, pueden
 # provocar un access violation. Un gc.collect() periódico (cada N backtests) lo
@@ -117,16 +119,10 @@ def run_backtest(
     vol_min = float(cfg["volume_min"]) or 0.01
     vol_step = float(cfg["volume_step"]) or 0.01
 
-    def _round_lot(vol: float) -> float:
-        steps = round(vol / vol_step) if vol_step else vol
-        return max(vol_min, round(steps * vol_step, 8))
-
+    # Sizing por riesgo% vía el módulo COMPARTIDO (mismo cálculo que el bot en vivo).
     def size_for(entry: float, sl: float | None) -> float:
-        if risk_pct and sl is not None and abs(entry - sl) > 0:
-            risk_amount = balance * risk_pct / 100.0
-            vol = risk_amount / ((abs(entry - sl) / pip) * pip_value)
-            return _round_lot(vol)
-        return float(cfg["default_volume"])
+        return _size_for(balance, risk_pct, entry, sl, pip, pip_value, vol_min, vol_step,
+                         float(cfg["default_volume"]))
 
     def close_position(exit_price: float, exit_time: int, reason: str) -> None:
         nonlocal balance, position, blown, blown_time
@@ -179,22 +175,13 @@ def run_backtest(
     def open_position(direction: str, i: int) -> None:
         nonlocal position
         entry = closes[i]  # entrada al precio medio; el spread se cobra como costo al cerrar
-        # Distancia del SL/TP en PRECIO: fija (pips) o adaptativa (N×ATR de esta vela).
-        if sl_mode == "atr":
-            a = atr_arr[i] if atr_arr is not None else float("nan")
-            if not (a == a) or a <= 0:  # ATR aún sin definir (velas iniciales) → no operar
-                return
-            sl_dist = sl_pips * a if sl_pips else None  # sl_pips = multiplicador N
-            tp_dist = tp_pips * a if tp_pips else None  # tp_pips = multiplicador M
-        else:
-            sl_dist = sl_pips * pip if sl_pips else None
-            tp_dist = tp_pips * pip if tp_pips else None
-        if direction == "buy":
-            sl = entry - sl_dist if sl_dist else None
-            tp = entry + tp_dist if tp_dist else None
-        else:
-            sl = entry + sl_dist if sl_dist else None
-            tp = entry - tp_dist if tp_dist else None
+        # Distancia del SL/TP en PRECIO vía el módulo COMPARTIDO (fija pips o N×ATR).
+        atr_value = atr_arr[i] if (sl_mode == "atr" and atr_arr is not None) else None
+        dists = sl_tp_distances(sl_mode, sl_pips, tp_pips, pip, atr_value)
+        if dists is None:  # modo ATR con ATR sin definir → no operar
+            return
+        sl_dist, tp_dist = dists
+        sl, tp = sl_tp_prices(direction, entry, sl_dist, tp_dist)
         position = {
             "dir": direction, "entry": entry, "entry_time": times[i],
             "sl": sl, "tp": tp, "volume": size_for(entry, sl),

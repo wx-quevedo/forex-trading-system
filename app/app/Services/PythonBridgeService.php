@@ -283,6 +283,24 @@ class PythonBridgeService
         return $this->request('GET', '/bot/status');
     }
 
+    /** Preview de fidelidad (Fase 1): SL/TP/lote que el ejecutor usaría, sin operar. Timeout amplio (corre backtests). */
+    public function botPreview(): array
+    {
+        return $this->request('GET', '/bot/preview', timeout: 60);
+    }
+
+    /** Preview ad-hoc (estrategias aún no iniciadas, p.ej. el diálogo de confirmar). @param array<int, array<string, mixed>> $rows */
+    public function botPreviewSpec(array $rows): array
+    {
+        return $this->request('POST', '/bot/preview', ['json' => ['rows' => $rows]], timeout: 90);
+    }
+
+    /** Journal PERSISTENTE del bot (aperturas/cierres; sobrevive reinicios y corte de día). */
+    public function botJournal(int $limit = 200): array
+    {
+        return $this->request('GET', '/bot/journal', ['query' => ['limit' => $limit]], timeout: 20);
+    }
+
     // --- Optimización automática (Fase 8A) -------------------------------
     /** @param array<string, mixed> $params @param array<string, mixed> $risk */
     public function optimize(string $type, array $params, string $symbol, string $timeframe, string $from, string $to, array $risk = [], float $split = 0.7, array $config = []): array
@@ -322,18 +340,25 @@ class PythonBridgeService
      * Reporte completo como STRING JSON crudo (sin decodificar a array PHP). Para
      * /explorer/results: con muchas combinaciones el reporte pesa decenas de MB; si
      * PHP lo decodifica a array y lo re-serializa, agota la memoria (FatalError 128MB).
-     * Devolviendo el body crudo y pasándolo tal cual, se evita materializar el array.
+     * Devuelve el STREAM (PSR-7) del body del bridge SIN leerlo entero a memoria.
+     *
+     * El reporte puede pesar decenas de MB (decenas de miles de filas). Materializarlo
+     * como string en PHP (aun crudo) agota los 128 MB con copias de Symfony Response.
+     * El controlador lo canaliza en trozos al cliente → memoria PHP plana sea cual sea
+     * el tamaño. La cabecera de respuesta (status) ya está disponible aquí sin leer el
+     * body (Guzzle con stream=true), así que un error del bridge se traduce antes de
+     * empezar a transmitir.
      */
-    public function exploreResultsRaw(): string
+    public function exploreResultsStream(): \Psr\Http\Message\StreamInterface
     {
-        $response = $this->client(60)->get('/explore/results');
+        $response = $this->client(60)->withOptions(['stream' => true])->get('/explore/results');
         if ($response->failed()) {
-            $body = $response->json();
-            $message = $body['error'] ?? $body['detail'] ?? $response->body();
+            $body = $response->json();   // error: body pequeño, leerlo es seguro
+            $message = $body['error'] ?? $body['detail'] ?? 'Error del bridge';
             throw new BridgeException(is_string($message) ? $message : json_encode($message), $response->status(), $body);
         }
 
-        return $response->body();
+        return $response->toPsrResponse()->getBody();
     }
 
     /** Desglose del score de Prioridad de UNA fila (on-demand para la modal). */

@@ -296,7 +296,7 @@ export interface BotRunSummary {
     started_at: string | null;
     magic: number;
     strategy: { type: string; params: Record<string, unknown>; symbol: string; timeframe: string };
-    config: { lot: number; sl_pips: number; tp_pips: number; daily_loss_limit: number; max_positions: number; news_filter?: boolean; news_window_min?: number; cb_max_losses?: number; cb_max_drawdown_pct?: number };
+    config: { lot: number; sl_pips: number; tp_pips: number; sl_mode?: string; atr_period?: number; risk_percent?: number; max_lot?: number; below_min?: string; daily_loss_limit: number; max_positions: number; news_filter?: boolean; news_window_min?: number; cb_max_losses?: number; cb_max_drawdown_pct?: number };
     realized_pnl_today: number;
     floating_pnl: number;
     daily_pnl: number;
