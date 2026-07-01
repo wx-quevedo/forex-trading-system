@@ -38,6 +38,14 @@ class StartRequest(BaseModel):
     arm_expiry_hours: float = Field(default=24.0, ge=0, le=168)  # auto-pausa si no abre (0 = off)
     daily_loss_limit: float = Field(default=100, ge=0)
     max_positions: int = Field(default=1, ge=1, le=20)
+    # Protecciones de CARTERA (Fase 7). ANTES no se declaraban aquí → Pydantic las
+    # descartaba en model_dump() → NUNCA llegaban al ejecutor (circuit breakers, heat y
+    # filtro de noticias quedaban en 0). Declararlas cierra ese hueco de seguridad.
+    portfolio_heat_pct: float = Field(default=0.0, ge=0, le=100)   # riesgo agregado máximo (global)
+    cb_max_losses: int = Field(default=0, ge=0, le=50)             # pausa tras N pérdidas seguidas
+    cb_max_drawdown_pct: float = Field(default=0.0, ge=0, le=100)  # pausa si el PnL cae X% del pico
+    news_filter: bool = Field(default=False)                       # no abrir en ventana de noticia alta
+    news_window_min: int = Field(default=15, ge=1, le=120)
 
 
 class TargetRequest(BaseModel):
