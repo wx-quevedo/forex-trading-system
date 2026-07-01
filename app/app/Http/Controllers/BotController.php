@@ -164,6 +164,10 @@ class BotController extends Controller
             'favorites' => ['required', 'array', 'min:1'],
             'favorites.*.favorite_id' => ['required', 'exists:favorites,id'],
             'favorites.*.lot' => ['required', 'numeric', 'gt:0', 'max:100'],
+            // Límite diario y tope de lote POR candidata (cartera multi-instrumento);
+            // si faltan, cae al global. Permite calibrar cada pata con su riesgo/op.
+            'favorites.*.daily_loss_limit' => ['nullable', 'numeric', 'min:0'],
+            'favorites.*.max_lot' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'daily_loss_limit' => ['required', 'numeric', 'min:0'],
             'max_positions' => ['required', 'integer', 'min:1', 'max:20'],
             'news_filter' => ['nullable', 'boolean'],
@@ -209,7 +213,7 @@ class BotController extends Controller
             );
 
             try {
-                $this->startStrategy($strategy, (float) $row['lot'], (float) $data['daily_loss_limit'], (int) $data['max_positions'], null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0), (float) ($data['max_lot'] ?? 0), (string) ($data['below_min'] ?? 'skip'), (float) ($data['arm_expiry_hours'] ?? 24));
+                $this->startStrategy($strategy, (float) $row['lot'], (float) ($row['daily_loss_limit'] ?? $data['daily_loss_limit']), (int) $data['max_positions'], null, (bool) ($data['news_filter'] ?? false), (int) ($data['news_window_min'] ?? 15), (int) ($data['cb_max_losses'] ?? 0), (float) ($data['cb_max_drawdown_pct'] ?? 0), (float) ($data['portfolio_heat_pct'] ?? 0), (float) ($row['max_lot'] ?? $data['max_lot'] ?? 0), (string) ($data['below_min'] ?? 'skip'), (float) ($data['arm_expiry_hours'] ?? 24));
             } catch (Throwable $e) {
                 $errors[] = "{$fav->name}: " . $e->getMessage();
             }

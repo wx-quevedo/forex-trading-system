@@ -62,6 +62,32 @@ class BotAtrFidelityTest extends TestCase
             ->assertJsonPath('previews.0.backtest_match.match', true);
     }
 
+    public function test_load_favorites_usa_limite_diario_y_tope_por_candidata(): void
+    {
+        $fav = Favorite::create([
+            'name' => 'oro macd', 'source' => 'explorer', 'pair' => 'GOLD#', 'type' => 'macd',
+            'timeframe' => 'H4', 'params' => ['fast' => 16, 'slow' => 26, 'signal' => 9],
+            'sl_pips' => 1.5, 'tp_pips' => 4.0, 'risk_percent' => 1.0, 'capital' => 10000,
+            'sl_mode' => 'atr', 'atr_period' => 21,
+        ]);
+
+        $this->mock(TelegramNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notify'));
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) {
+            // El limite diario y el tope de lote deben venir de la CANDIDATA (360/0.2),
+            // no del global (999/9), calibrados con su riesgo/op.
+            $m->shouldReceive('botStart')->once()
+                ->withArgs(fn (array $p) => $p['daily_loss_limit'] === 360.0 && $p['max_lot'] === 0.2)
+                ->andReturn(['status' => 'running']);
+        });
+
+        $this->actingAs(User::factory()->create())
+            ->postJson('/bot/load-favorites', [
+                'favorites' => [['favorite_id' => $fav->id, 'lot' => 0.01, 'daily_loss_limit' => 360, 'max_lot' => 0.2]],
+                'daily_loss_limit' => 999, 'max_positions' => 1, 'max_lot' => 9,
+            ])
+            ->assertOk();
+    }
+
     public function test_journal_persistente_proxya_el_bridge(): void
     {
         $this->mock(PythonBridgeService::class, function (MockInterface $m) {

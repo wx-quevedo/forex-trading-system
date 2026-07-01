@@ -162,6 +162,9 @@ export default function Control({ strategies, favorites, status: initialStatus, 
     const [armExpiryHours, setArmExpiryHours] = useState(24);
     const [confirmPreview, setConfirmPreview] = useState<Record<number, PreviewRow>>({});
     const [confirmLoading, setConfirmLoading] = useState(false);
+    // Límite diario + tope de lote POR candidata (cartera multi-instrumento), calibrados
+    // con el riesgo/op del preview (límite ~3× riesgo/op; tope ~5× lote normal, min 0.5).
+    const [confirmLimits, setConfirmLimits] = useState<Record<number, { daily: number; maxLot: number }>>({});
     const toggleFav = (id: number) => setFavSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
     const fetchConfirmPreview = async (ids: number[]) => {
         setConfirmLoading(true);
@@ -172,6 +175,19 @@ export default function Control({ strategies, favorites, status: initialStatus, 
                 if (p.favorite_id != null) map[p.favorite_id] = p;
             }
             setConfirmPreview(map);
+            // Defaults calibrados por candidata (solo si el usuario no los tocó ya).
+            setConfirmLimits((prev) => {
+                const next = { ...prev };
+                for (const [idStr, p] of Object.entries(map)) {
+                    const id = Number(idStr);
+                    if (next[id] || !p.ok) continue;
+                    const risk = p.risk_usd ?? 0;
+                    const daily = risk > 0 ? Math.max(10, Math.round((risk * 3) / 10) * 10) : 100;   // ~3x riesgo/op
+                    const maxLot = Math.max(0.5, Math.ceil((p.would_lot ?? 0.1) * 5 * 10) / 10);        // ~5x lote, min 0.5
+                    next[id] = { daily, maxLot };
+                }
+                return next;
+            });
         } catch { setConfirmPreview({}); } finally { setConfirmLoading(false); }
     };
     const openConfirm = () => {
@@ -187,7 +203,11 @@ export default function Control({ strategies, favorites, status: initialStatus, 
     const confirmLoad = async () => {
         if (!confirmRows) return;
         await action('/bot/load-favorites', {
-            favorites: confirmRows.map((r) => ({ favorite_id: r.fav.id, lot: r.lot })),
+            favorites: confirmRows.map((r) => ({
+                favorite_id: r.fav.id, lot: r.lot,
+                daily_loss_limit: confirmLimits[r.fav.id]?.daily,
+                max_lot: confirmLimits[r.fav.id]?.maxLot,
+            })),
             daily_loss_limit: dailyLossLimit, max_positions: maxPositions,
             news_filter: newsFilter, news_window_min: newsWindowMin,
             cb_max_losses: cbMaxLosses, cb_max_drawdown_pct: cbMaxDrawdownPct, portfolio_heat_pct: portfolioHeatPct,
@@ -441,25 +461,31 @@ export default function Control({ strategies, favorites, status: initialStatus, 
                                             {pv.warn && <span className="text-warning" title={pv.warn}>aviso</span>}
                                         </div>
                                     )}
+                                    {pv?.ok && (() => {
+                                        // Límite diario + tope de lote POR candidata (calibrados con el riesgo/op).
+                                        const lim = confirmLimits[fav.id] ?? { daily: 100, maxLot: 0.5 };
+                                        const low = (pv.risk_usd ?? 0) > 0 && lim.daily < (pv.risk_usd ?? 0);
+                                        const set = (patch: Partial<{ daily: number; maxLot: number }>) =>
+                                            setConfirmLimits((p) => ({ ...p, [fav.id]: { ...lim, ...patch } }));
+                                        return (
+                                            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+                                                <label className="flex items-center gap-1"><span className="text-text-secondary">límite diario $</span>
+                                                    <input type="number" min={0} value={lim.daily} onChange={(e) => set({ daily: Number(e.target.value) })} className={`w-20 rounded border bg-bg-surface px-1.5 py-0.5 font-mono ${low ? 'border-loss text-loss' : 'border-border'}`} /></label>
+                                                <label className="flex items-center gap-1"><span className="text-text-secondary">tope lote</span>
+                                                    <input type="number" min={0} step={0.01} value={lim.maxLot} onChange={(e) => set({ maxLot: Number(e.target.value) })} className="w-16 rounded border border-border bg-bg-surface px-1.5 py-0.5 font-mono" /></label>
+                                                {low && <span className="text-loss">límite &lt; riesgo/op (${pv.risk_usd}) — se disparará con una pérdida</span>}
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
                             ); })}
                         </div>
 
-                        {(() => {
-                            // Aviso: si el límite diario es MENOR que el riesgo de una operación, se
-                            // disparará con una sola pérdida normal (justo lo que pasó con GOLD#).
-                            const maxRisk = Math.max(0, ...confirmRows.map((r) => confirmPreview[r.fav.id]?.risk_usd ?? 0));
-                            return maxRisk > 0 && dailyLossLimit < maxRisk ? (
-                                <div className="mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-warning">
-                                    El límite diario (${dailyLossLimit}) es MENOR que el riesgo de una operación (${maxRisk.toFixed(2)}): se disparará con una sola pérdida normal y detendrá la estrategia. Súbelo por encima del riesgo/op (idealmente 2-3×).
-                                </div>
-                            ) : null;
-                        })()}
-
-                        <div className="mt-3 grid grid-cols-2 gap-3">
-                            <FieldLab label="Límite pérdida diaria (por estrategia)"><input type="number" min={0} value={dailyLossLimit} onChange={(e) => setDailyLossLimit(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                        <p className="mt-3 text-[11px] text-text-secondary">El límite diario y el tope de lote se fijan POR candidata arriba (calibrados con su riesgo/op). Los de abajo son respaldo global (Heat, breakers y caducidad aplican a toda la cartera).</p>
+                        <div className="mt-1 grid grid-cols-2 gap-3">
+                            <FieldLab label="Límite diario (respaldo global)"><input type="number" min={0} value={dailyLossLimit} onChange={(e) => setDailyLossLimit(Number(e.target.value))} className="input font-mono" /></FieldLab>
                             <FieldLab label="Máx posiciones (por estrategia)"><input type="number" min={1} max={20} value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} className="input font-mono" /></FieldLab>
-                            <FieldLab label="Tope de lote (0 = solo el del bróker)"><input type="number" min={0} step={0.01} value={maxLot} onChange={(e) => setMaxLot(Number(e.target.value))} className="input font-mono" /></FieldLab>
+                            <FieldLab label="Tope de lote (respaldo global)"><input type="number" min={0} step={0.01} value={maxLot} onChange={(e) => setMaxLot(Number(e.target.value))} className="input font-mono" /></FieldLab>
                             <FieldLab label="Si riesgo% < lote mínimo">
                                 <select value={belowMin} onChange={(e) => setBelowMin(e.target.value as 'skip' | 'floor')} className="input font-mono">
                                     <option value="skip">No abrir (conservador)</option>
@@ -467,6 +493,13 @@ export default function Control({ strategies, favorites, status: initialStatus, 
                                 </select>
                             </FieldLab>
                             <FieldLab label="Caducidad del arme (h, 0 = off)"><input type="number" min={0} max={168} value={armExpiryHours} onChange={(e) => setArmExpiryHours(Number(e.target.value))} className="input font-mono" title="Si tras armar no abre posición en N horas, se auto-pausa." /></FieldLab>
+                        </div>
+
+                        <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Protecciones de cartera (globales)</div>
+                        <div className="mt-1 grid grid-cols-3 gap-3">
+                            <FieldLab label="Portfolio Heat % (0 = off)"><input type="number" min={0} max={100} step={0.5} value={portfolioHeatPct} onChange={(e) => setPortfolioHeatPct(Number(e.target.value))} className="input font-mono" title="Riesgo agregado máximo de TODAS las estrategias. No abre si se superaría." /></FieldLab>
+                            <FieldLab label="CB: pérdidas seguidas (0 = off)"><input type="number" min={0} max={50} value={cbMaxLosses} onChange={(e) => setCbMaxLosses(Number(e.target.value))} className="input font-mono" title="Pausa la estrategia tras N pérdidas consecutivas." /></FieldLab>
+                            <FieldLab label="CB: drawdown % (0 = off)"><input type="number" min={0} max={100} step={0.5} value={cbMaxDrawdownPct} onChange={(e) => setCbMaxDrawdownPct(Number(e.target.value))} className="input font-mono" title="Pausa la estrategia si el PnL cae X% desde su pico." /></FieldLab>
                         </div>
 
                         {(() => {
