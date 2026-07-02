@@ -43,7 +43,8 @@ catch { $problems += 'Bridge caido (no responde /health)' }
 # 2) MT5 conectado (bridge /account con API key devuelve balance)
 if ($apiKey) {
     try {
-        $acc = Invoke-RestMethod -TimeoutSec 8 -UseBasicParsing -Uri "$bridgeUrl/account" -Headers @{ 'X-API-Key' = $apiKey }
+        # 15s: las llamadas MT5 pueden tardar puntualmente (evita falsos positivos por lentitud).
+        $acc = Invoke-RestMethod -TimeoutSec 15 -UseBasicParsing -Uri "$bridgeUrl/account" -Headers @{ 'X-API-Key' = $apiKey }
         if ($null -eq $acc.balance) { $problems += 'MT5 sin datos de cuenta (desconectado?)' }
     } catch { $problems += 'MT5 desconectado (bridge /account fallo)' }
 }
@@ -54,17 +55,25 @@ try {
     if (-not $hz.ok) { $problems += "BD con problema: $($hz.error)" }
 } catch { $problems += 'Laravel caido o BD locked (/healthz fallo)' }
 
-# --- Resultado: ping si sano; si no, NO pinga (Healthchecks alerta por ausencia) + aviso ---
+# --- Resultado con DEBOUNCE: solo alerta tras N fallos consecutivos (evita falsos
+# positivos por lentitud transitoria de MT5). El estado guarda un contador de fallos. ---
 $stateFile = Join-Path $env:TEMP 'forexbot_watchdog_state.txt'
-$prev = if (Test-Path $stateFile) { (Get-Content $stateFile -Raw).Trim() } else { 'ok' }
-$now  = if ($problems.Count -eq 0) { 'ok' } else { 'fail' }
+$threshold = 2   # 2 fallos seguidos (cada 2 min) => alerta tras ~2-4 min de caida real
+$prevCount = 0
+if (Test-Path $stateFile) { [void][int]::TryParse((Get-Content $stateFile -Raw).Trim(), [ref]$prevCount) }
 
-if ($now -eq 'ok') {
+if ($problems.Count -eq 0) {
+    # Sano: ping OK (verde) + reset. Si ya habiamos alertado, avisar recuperacion.
     if ($hcUrl) { try { Invoke-WebRequest -TimeoutSec 10 -UseBasicParsing -Uri $hcUrl | Out-Null } catch {} }
-    if ($prev -eq 'fail') { Send-Telegram '<b>ForexBot recuperado</b> - bridge/MT5/Laravel/BD OK' }
+    if ($prevCount -ge $threshold) { Send-Telegram '<b>ForexBot recuperado</b> - bridge/MT5/Laravel/BD OK' }
+    Set-Content -Path $stateFile -Value '0' -Encoding ascii
 } else {
-    if ($hcUrl) { try { Invoke-WebRequest -TimeoutSec 10 -UseBasicParsing -Uri "$hcUrl/fail" | Out-Null } catch {} }
-    # Aviso directo SOLO en la transicion ok->fail (Healthchecks recuerda si sigue caido).
-    if ($prev -ne 'fail') { Send-Telegram ("<b>ForexBot watchdog - PROBLEMA</b>`n" + ($problems -join "`n")) }
+    $count = $prevCount + 1
+    Set-Content -Path $stateFile -Value ([string]$count) -Encoding ascii
+    if ($count -ge $threshold) {
+        # Fallo SOSTENIDO: /fail a Healthchecks + Telegram (solo al cruzar el umbral, sin repetir).
+        if ($hcUrl) { try { Invoke-WebRequest -TimeoutSec 10 -UseBasicParsing -Uri "$hcUrl/fail" | Out-Null } catch {} }
+        if ($count -eq $threshold) { Send-Telegram ("<b>ForexBot watchdog - PROBLEMA</b>`n" + ($problems -join "`n")) }
+    }
+    # count < threshold: transitorio -> no alerta, no ping (Healthchecks tolera 1 ping perdido en su grace).
 }
-Set-Content -Path $stateFile -Value $now -Encoding ascii
