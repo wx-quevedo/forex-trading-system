@@ -131,3 +131,57 @@ export function macd(candles: Candle[], fast = 12, slow = 26, signalPeriod = 9):
 
     return { macd: macdLine, signal: signalLine, histogram };
 }
+
+/**
+ * CCI (Commodity Channel Index) — ESPEJO EXACTO del bridge (`indicators.cci`):
+ *   TP = (H + L + C) / 3
+ *   CCI = (TP − SMA(TP, N)) / (0.015 × MAD)     MAD = media de |TP − mean(ventana)|
+ * Ventana de N velas INCLUYENDO la actual (sin shift). Si MAD=0 se omite el punto
+ * (el bridge devuelve NaN). El umbral ±threshold se dibuja como niveles, no aquí.
+ */
+export function cci(candles: Candle[], period = 20): LinePoint[] {
+    if (candles.length < period || period < 1) return [];
+    const tp = candles.map((c) => (c.high + c.low + c.close) / 3);
+    const out: LinePoint[] = [];
+    for (let i = period - 1; i < candles.length; i++) {
+        const win = tp.slice(i - period + 1, i + 1);
+        const mean = win.reduce((a, b) => a + b, 0) / period;
+        const mad = win.reduce((a, b) => a + Math.abs(b - mean), 0) / period;
+        if (mad === 0) continue;
+        out.push({ time: candles[i].time, value: (tp[i] - mean) / (0.015 * mad) });
+    }
+    return out;
+}
+
+export interface DonchianResult {
+    upper: LinePoint[];
+    lower: LinePoint[];
+    mid: LinePoint[];
+}
+
+/**
+ * Canales de Donchian — ESPEJO EXACTO del bridge (`indicators.donchian`):
+ *   upper = max(high, N).shift(1)   lower = min(low, N).shift(1)   mid = (u+l)/2
+ * El shift(1) es CLAVE: el canal es el de las N velas PREVIAS (no incluye la vela
+ * actual → evita lookahead). El atr_buffer de la estrategia afecta solo al disparo
+ * del breakout, no a estas líneas del canal.
+ */
+export function donchian(candles: Candle[], period = 20): DonchianResult {
+    const upper: LinePoint[] = [];
+    const lower: LinePoint[] = [];
+    const mid: LinePoint[] = [];
+    if (candles.length <= period || period < 1) return { upper, lower, mid };
+    for (let i = period; i < candles.length; i++) {
+        let hi = -Infinity;
+        let lo = Infinity;
+        for (let j = i - period; j < i; j++) {
+            if (candles[j].high > hi) hi = candles[j].high;
+            if (candles[j].low < lo) lo = candles[j].low;
+        }
+        const time = candles[i].time;
+        upper.push({ time, value: hi });
+        lower.push({ time, value: lo });
+        mid.push({ time, value: (hi + lo) / 2 });
+    }
+    return { upper, lower, mid };
+}

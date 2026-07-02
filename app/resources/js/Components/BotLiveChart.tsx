@@ -16,7 +16,7 @@ import {
     type UTCTimestamp,
 } from 'lightweight-charts';
 import type { BotClosedTrade, BotPosition, BotSignal, Candle } from '@/types';
-import { movingAverage, bollinger, rsi, macd } from '@/lib/indicators';
+import { movingAverage, bollinger, rsi, macd, cci, donchian } from '@/lib/indicators';
 import { fmtTimeMs } from '@/lib/format';
 import { DISPLAY_TZ_OFFSET_SECONDS as TZ } from '@/lib/tz';
 import { PositionZones, type PositionZone } from '@/lib/positionZones';
@@ -42,8 +42,8 @@ const C = {
 
 const t = (time: number) => (time + TZ) as UTCTimestamp; // desplaza a hora local (UTC-5)
 const num = (v: number | string | undefined, d: number) => (v == null || v === '' ? d : Number(v));
-const oscillatorFor = (type: string): 'rsi' | 'macd' | 'volume' =>
-    type === 'rsi' || type === 'combined' ? 'rsi' : type === 'macd' ? 'macd' : 'volume';
+const oscillatorFor = (type: string): 'rsi' | 'macd' | 'cci' | 'volume' =>
+    type === 'rsi' || type === 'combined' ? 'rsi' : type === 'macd' ? 'macd' : type === 'cci' ? 'cci' : 'volume';
 
 function nearestCandleTime(candles: Candle[], ts: number): number | null {
     let best: number | null = null;
@@ -65,7 +65,7 @@ interface Bundle {
     chart: IChartApi;
     candle: ISeriesApi<'Candlestick'>;
     lines: ISeriesApi<'Line'>[];
-    osc: { kind: 'rsi' | 'macd' | 'volume'; rsi?: ISeriesApi<'Line'>; macdLine?: ISeriesApi<'Line'>; macdSignal?: ISeriesApi<'Line'>; macdHist?: ISeriesApi<'Histogram'>; volume?: ISeriesApi<'Histogram'> };
+    osc: { kind: 'rsi' | 'macd' | 'cci' | 'volume'; rsi?: ISeriesApi<'Line'>; cci?: ISeriesApi<'Line'>; macdLine?: ISeriesApi<'Line'>; macdSignal?: ISeriesApi<'Line'>; macdHist?: ISeriesApi<'Histogram'>; volume?: ISeriesApi<'Histogram'> };
     markers: ISeriesMarkersPluginApi<Time>;
     zones: PositionZones;
     priceLines: IPriceLine[];
@@ -88,7 +88,7 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
     digitsRef.current = digits;
     const follow = useRef(true);
 
-    const structureKey = `${strategyType}|${digits}|${num(params.oversold, 30)}|${num(params.overbought, 70)}|${num(params.rsi_oversold, 30)}|${num(params.rsi_overbought, 70)}|${height}`;
+    const structureKey = `${strategyType}|${digits}|${num(params.oversold, 30)}|${num(params.overbought, 70)}|${num(params.rsi_oversold, 30)}|${num(params.rsi_overbought, 70)}|${num(params.threshold, 100)}|${height}`;
 
     // --- Efecto A: construir chart + series (estructura) ---
     useEffect(() => {
@@ -125,6 +125,10 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             mkLine(C.band, 1);
         } else if (strategyType === 'combined') {
             mkLine(C.slow);
+        } else if (strategyType === 'donchian') {
+            mkLine(C.band, 1);   // upper
+            mkLine(C.slow, 1);   // mid
+            mkLine(C.band, 1);   // lower
         }
 
         const kind = oscillatorFor(strategyType);
@@ -138,6 +142,11 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             osc.macdHist = chart.addSeries(HistogramSeries, { priceScaleId: 'macd' }, 2);
             osc.macdLine = chart.addSeries(LineSeries, { color: C.fast, lineWidth: 2, priceScaleId: 'macd' }, 2);
             osc.macdSignal = chart.addSeries(LineSeries, { color: C.slow, lineWidth: 2, priceScaleId: 'macd' }, 2);
+        } else if (kind === 'cci') {
+            osc.cci = chart.addSeries(LineSeries, { color: C.fast, lineWidth: 2 }, 2);
+            const th = num(params.threshold, 100);
+            [th, -th].forEach((lvl) => osc.cci!.createPriceLine({ price: lvl, color: C.border, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: String(lvl) }));
+            osc.cci.createPriceLine({ price: 0, color: C.border, lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: '' });
         } else {
             osc.volume = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' }, 1);
         }
@@ -231,6 +240,11 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
         } else if (strategyType === 'combined') {
             const maType = (params.trend_ma_type as 'sma' | 'ema') ?? 'ema';
             setLine(bundle.lines[0], movingAverage(candles, num(params.trend_period, 50), maType));
+        } else if (strategyType === 'donchian') {
+            const d = donchian(candles, num(params.period, 20));
+            setLine(bundle.lines[0], d.upper);
+            setLine(bundle.lines[1], d.mid);
+            setLine(bundle.lines[2], d.lower);
         }
 
         const { osc } = bundle;
@@ -242,6 +256,8 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             osc.macdHist?.setData(m.histogram.map((p) => ({ time: t(p.time), value: p.value, color: p.value >= 0 ? `${C.up}80` : `${C.down}80` })));
             setLine(osc.macdLine, m.macd);
             setLine(osc.macdSignal, m.signal);
+        } else if (osc.kind === 'cci' && osc.cci) {
+            setLine(osc.cci, cci(candles, num(params.period, 20)));
         } else if (osc.volume) {
             osc.volume.setData(candles.map((c) => ({ time: t(c.time), value: c.tick_volume, color: c.close >= c.open ? `${C.up}80` : `${C.down}80` })));
         }

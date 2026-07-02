@@ -90,3 +90,175 @@ body {
 .animate-progress-indeterminate {
     animation: progress-indeterminate 1.1s ease-in-out infinite;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Rediseño de /bot — design-system SCOPED bajo .botui (no afecta otras vistas).
+ * Paleta por estado (verde/ámbar/rojo/gris = estados; azul = solo interacción),
+ * tipografía con cifras tabulares, tarjetas con elevación, badge de estado signature.
+ * ═══════════════════════════════════════════════════════════════════════ */
+.botui {
+    --bg:          #0e1116;
+    --surface:     #161a21;
+    --elevated:    #1e242d;
+    --border:      #2a313c;
+    --border-soft: #222834;
+    --text:        #e6e8ee;
+    --text-2:      #94a1b5;
+    --text-3:      #5e6b7e;
+    --pos:         #23b79b;   /* operando / positivo */
+    --pos-dim:     #1c7f6e;   /* armada · esperando */
+    --warn:        #f5a524;   /* pausada / atención */
+    --neg:         #f0616b;   /* bloqueada / negativo / panic */
+    --idle:        #6b7686;   /* detenida / inactiva */
+    --accent:      #3b82f6;   /* SOLO interacción */
+    --pos-wash:  rgba(35, 183, 155, 0.13);
+    --warn-wash: rgba(245, 165, 36, 0.13);
+    --neg-wash:  rgba(240, 97, 107, 0.13);
+    --idle-wash: rgba(107, 118, 134, 0.14);
+    --r: 12px;
+    --shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 8px 24px -12px rgba(0, 0, 0, 0.6);
+    color: var(--text);
+}
+.bui-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ── Barra global (sticky) ── */
+.bui-globalbar {
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    background: linear-gradient(180deg, #171c24, #12151b);
+    border: 1px solid var(--border); border-radius: var(--r);
+    padding: 14px 18px; box-shadow: var(--shadow);
+}
+.bui-gb-state { display: flex; align-items: center; gap: 10px; }
+.bui-gb-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); position: relative; flex: none; }
+.bui-gb-lab { font-weight: 650; font-size: 14px; }
+.bui-gb-state.is-running .bui-gb-dot { background: var(--pos); }
+.bui-gb-state.is-running .bui-gb-dot::after {
+    content: ''; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1px solid var(--pos); animation: bui-breathe 2.2s ease-out infinite;
+}
+.bui-gb-state.is-paused  .bui-gb-dot { background: var(--warn); }
+.bui-gb-state.is-stopped .bui-gb-dot { background: var(--idle); }
+.bui-gb-state.is-error   .bui-gb-dot { background: var(--neg); }
+.bui-gb-state.is-error   .bui-gb-lab { color: var(--neg); }
+.bui-gb-arm { color: var(--text-2); font-size: 13px; }
+.bui-gb-arm b { color: var(--text); font-weight: 600; }
+.bui-hero { margin-left: auto; text-align: right; }
+.bui-hero-label { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+.bui-hero-val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 30px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; color: var(--text-2); }
+.bui-hero-val.up { color: var(--pos); }
+.bui-hero-val.down { color: var(--neg); }
+.bui-gactions { display: flex; gap: 10px; }
+
+/* ── Botones ── */
+.bui-btn {
+    font-family: var(--font-sans); font-size: 12.5px; font-weight: 600; cursor: pointer;
+    border-radius: 8px; padding: 7px 14px; border: 1px solid var(--border);
+    background: var(--elevated); color: var(--text); white-space: nowrap;
+}
+.bui-btn:hover:not(:disabled) { border-color: var(--text-3); }
+.bui-btn:disabled { opacity: 0.5; cursor: default; }
+.bui-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bui-btn.primary { background: rgba(59, 130, 246, 0.14); border-color: rgba(59, 130, 246, 0.4); color: #9ec1ff; }
+.bui-btn.ghost { background: transparent; }
+.bui-btn.danger { background: var(--neg-wash); border-color: rgba(240, 97, 107, 0.5); color: #f79aa1; }
+.bui-btn.sm { padding: 5px 11px; font-size: 12px; }
+
+/* ── Tarjetas ── */
+.bui-grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+@media (max-width: 720px) { .bui-grid2 { grid-template-columns: 1fr; } }
+.bui-card {
+    background: linear-gradient(180deg, var(--surface), #13171d);
+    border: 1px solid var(--border); border-radius: var(--r);
+    padding: 16px 16px 14px; box-shadow: var(--shadow); position: relative;
+}
+.bui-card.acc-pos   { border-top: 2px solid var(--pos); }
+.bui-card.acc-armed { border-top: 2px solid var(--pos-dim); }
+.bui-card.acc-warn  { border-top: 2px solid var(--warn); }
+.bui-card.acc-neg   { border-top: 2px solid var(--neg); }
+.bui-card.acc-idle  { border-top: 2px solid var(--idle); }
+.bui-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.bui-sym { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.bui-sym .type { color: var(--text-3); font-weight: 500; }
+.bui-sym .sub { display: block; font-size: 11px; color: var(--text-3); font-weight: 500; margin-top: 2px; }
+.bui-pnl { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+.bui-pnl.up { color: var(--pos); } .bui-pnl.down { color: var(--neg); } .bui-pnl.flat { color: var(--text-2); }
+.bui-pnl-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); text-align: right; }
+.bui-posline { margin-top: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background: var(--elevated); border-radius: 8px; padding: 9px 11px; }
+.bui-posline .k { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.bui-posline .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 12.5px; margin-top: 2px; }
+.bui-posline .v.sl { color: var(--neg); } .bui-posline .v.tp { color: var(--pos); }
+.bui-empty { margin-top: 12px; color: var(--text-3); font-size: 12.5px; background: var(--elevated); border-radius: 8px; padding: 11px; text-align: center; }
+.bui-params { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.bui-tag { font-size: 11px; color: var(--text-2); background: var(--elevated); border: 1px solid var(--border-soft); border-radius: 6px; padding: 3px 8px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.bui-reason { color: var(--neg); font-size: 11.5px; margin-top: 10px; display: flex; gap: 6px; align-items: flex-start; }
+.bui-reason.warn { color: var(--warn); }
+.bui-card-foot { margin-top: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.bui-kebab { position: relative; }
+.bui-kebab-btn { color: var(--text-3); font-size: 18px; padding: 4px 10px; cursor: pointer; background: transparent; border: none; border-radius: 6px; line-height: 1; }
+.bui-kebab-btn:hover { color: var(--text); background: var(--elevated); }
+.bui-kebab-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bui-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 130px; background: var(--elevated); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; }
+.bui-menu button { display: block; width: 100%; text-align: left; background: transparent; border: none; color: var(--text); font-size: 12.5px; padding: 7px 10px; border-radius: 5px; cursor: pointer; font-family: var(--font-sans); }
+.bui-menu button:hover { background: var(--surface); }
+.bui-menu button.danger { color: #f79aa1; }
+.bui-backdrop-t { position: fixed; inset: 0; z-index: 10; }
+
+/* ── Badge de estado (signature) ── */
+.bui-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 5px 11px 5px 9px; border-radius: 999px; white-space: nowrap; border: 1px solid transparent;
+}
+.bui-badge .bui-dot { width: 8px; height: 8px; border-radius: 50%; position: relative; flex: none; }
+.bui-b-operando { background: var(--pos); color: #04120e; }
+.bui-b-operando .bui-dot { background: #04120e; }
+.bui-b-armada { background: var(--pos-wash); color: #7fd9c7; border-color: rgba(35, 183, 155, 0.4); }
+.bui-b-armada .bui-dot { background: var(--pos); }
+.bui-b-armada .bui-dot::after {
+    content: ''; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1px solid var(--pos); animation: bui-breathe 2.2s ease-out infinite;
+}
+.bui-b-pausada { background: var(--warn-wash); color: #f5c578; border-color: rgba(245, 165, 36, 0.42); }
+.bui-b-pausada .bui-dot { background: var(--warn); }
+.bui-b-detenida { background: var(--idle-wash); color: #97a2b2; border-color: rgba(107, 118, 134, 0.35); }
+.bui-b-detenida .bui-dot { background: var(--idle); }
+.bui-b-bloqueada { background: var(--neg-wash); color: #f79aa1; border-color: rgba(240, 97, 107, 0.45); }
+.bui-b-bloqueada .bui-dot { background: var(--neg); }
+
+@keyframes bui-breathe { 0% { transform: scale(0.6); opacity: 0.9; } 100% { transform: scale(1.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    .bui-b-armada .bui-dot::after,
+    .bui-gb-state.is-running .bui-gb-dot::after { animation: none; opacity: 0.5; transform: scale(1); }
+}
+
+/* ── Tarjeta compacta seleccionable (sidebar) + panel del gráfico ── */
+.bui-card.compact { padding: 12px 13px 11px; cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.bui-card.compact:hover { border-color: var(--text-3); }
+.bui-card.compact .bui-pnl { font-size: 17px; }
+.bui-card.is-selected { box-shadow: 0 0 0 1.5px var(--accent) inset, var(--shadow); }
+.bui-card.compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bui-cardmeta { margin-top: 9px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-3); display: flex; flex-wrap: wrap; gap: 8px; }
+
+.bui-mktstrip { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 9px 14px; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 12.5px; }
+.bui-mkt-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.bui-mkt-dot.open { background: var(--pos); box-shadow: 0 0 0 3px var(--pos-wash); }
+.bui-mkt-dot.closed { background: var(--idle); }
+.bui-mkt-lab { font-weight: 650; }
+.bui-mkt-sep { color: var(--text-3); }
+.bui-mkt-when { color: var(--text-2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 12px; }
+.bui-mkt-when .tz { color: var(--text-3); }
+.bui-mkt-aprox { color: var(--text-3); font-size: 10.5px; border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 6px; cursor: help; }
+
+.bui-chartpanel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
+.bui-chart-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--border-soft); }
+.bui-chart-title { font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+.bui-chart-title .type { color: var(--text-3); font-weight: 500; }
+.bui-chart-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
+.bui-chart-empty { padding: 60px 20px; text-align: center; color: var(--text-3); font-size: 13px; }
+
+/* ── Placeholder de secciones en construcción (Partes 2-3) ── */
+.bui-placeholder {
+    border: 1px dashed var(--border); border-radius: var(--r); padding: 22px;
+    color: var(--text-3); font-size: 13px; text-align: center; background: rgba(255, 255, 255, 0.01);
+}
+.bui-section-label { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 650; color: var(--text-2); margin: 0 0 12px; }
