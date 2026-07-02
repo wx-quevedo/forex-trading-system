@@ -283,6 +283,12 @@ class PythonBridgeService
         return $this->request('GET', '/bot/status');
     }
 
+    /** Señales del ciclo de vida del bridge (arranques/uptime SO/pausa-por-reinicio) para bot:autoresume. */
+    public function botLifecycle(): array
+    {
+        return $this->request('GET', '/bot/lifecycle');
+    }
+
     /** Preview de fidelidad (Fase 1): SL/TP/lote que el ejecutor usaría, sin operar. Timeout amplio (corre backtests). */
     public function botPreview(): array
     {

@@ -15,7 +15,7 @@ use Throwable;
  */
 class TelegramNotifier
 {
-    public const EVENTS = ['started', 'paused', 'resumed', 'stopped', 'trade_opened', 'trade_closed', 'daily_limit', 'circuit_breaker', 'arm_expired', 'heat_block', 'daily_summary', 'panic', 'error'];
+    public const EVENTS = ['started', 'paused', 'resumed', 'stopped', 'trade_opened', 'trade_closed', 'daily_limit', 'circuit_breaker', 'arm_expired', 'heat_block', 'daily_summary', 'panic', 'error', 'restart'];
 
     private const CACHE_ENABLED = 'forexbot.telegram_enabled';
     private const CACHE_EVENTS = 'forexbot.telegram_events';

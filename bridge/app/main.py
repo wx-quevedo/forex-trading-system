@@ -27,6 +27,10 @@ from .routers import account, backtest, bot, calendar, explore, market, optimize
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Registra ESTE arranque (ts + uptime del SO) para el auto-reanudar seguro: el
+    # historial persistente permite detectar un crash-loop (muchos arranques seguidos).
+    from .bot import lifecycle
+    lifecycle.record_boot()
     # Conexión PEREZOSA a propósito: el bridge levanta al instante y se conecta
     # a MT5 en la primera petición real (ensure_connected). Así un terminal
     # cerrado, credenciales pendientes o el mercado fuera de horario no impiden

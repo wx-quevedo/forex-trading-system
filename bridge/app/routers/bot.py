@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ..auth import require_api_key
-from ..bot import bot_runner, journal as bot_journal
+from ..bot import bot_runner, journal as bot_journal, lifecycle
 from ..bot.preview import preview_all
-from ..bot.state import bot_state
+from ..bot.state import RESTART_PAUSE_REASON, bot_state
 from ..mt5_client import client
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -81,6 +81,26 @@ def bot_preview_spec(req: PreviewSpecRequest):
 @router.get("/bot/journal", summary="Journal PERSISTENTE del bot (aperturas/cierres) — sobrevive reinicios y corte de día")
 def bot_journal_read(limit: int = 200):
     return {"entries": bot_journal.tail(max(1, min(1000, limit)))}
+
+
+@router.get("/bot/lifecycle", summary="Arranques del bridge + estado de pausa-por-reinicio (para el auto-reanudar)")
+def bot_lifecycle():
+    """Señales para el auto-reanudar seguro de Laravel: historial de arranques del bridge
+    (crash-loop), uptime del SO (informativo) y qué estrategias quedaron pausadas por el
+    fail-safe de reinicio. Solo LECTURA."""
+    boots = lifecycle.recent_boots()
+    with bot_state.lock():
+        restart_ids = [
+            r["strategy_id"] for r in bot_state.runs.values()
+            if r.get("status") == "paused" and r.get("stop_reason") == RESTART_PAUSE_REASON
+        ]
+    return {
+        "boots": boots,
+        "boot_id": boots[-1]["ts"] if boots else None,  # id estable del arranque actual
+        "os_uptime_s": lifecycle.os_uptime_s(),
+        "restart_paused": bool(restart_ids),
+        "restart_paused_ids": restart_ids,
+    }
 
 
 @router.post("/bot/pause", summary="Pausa una estrategia (o todas)")

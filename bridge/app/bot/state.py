@@ -11,6 +11,8 @@ arrancan PAUSADAS (fail-safe). El estado se guarda como JSON junto al bridge.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +26,11 @@ BOT_MAGIC = BOT_MAGIC_BASE  # compat: magic genérico para órdenes sin estrateg
 
 _STATE_FILE = Path(__file__).resolve().parent.parent.parent / "bot_state.json"
 _MAX_SIGNALS = 200
+
+# Marcador único del fail-safe de reinicio: al arrancar, todo run que estaba `running`
+# queda `paused` con este motivo. El auto-reanudar (Laravel) SOLO reanuda runs con este
+# marcador exacto → nunca toca lo que el usuario pausó/detuvo a mano.
+RESTART_PAUSE_REASON = "Reinicio del bridge: la estrategia arrancó PAUSADA por seguridad."
 
 
 def magic_for(strategy_id: int) -> int:
@@ -118,12 +125,21 @@ class BotState:
         run["peak_pnl"] = run.get("realized_pnl_today", 0.0)
 
     # -- persistencia ------------------------------------------------------
+    def _read_state_file(self) -> dict[str, Any] | None:
+        """Lee el JSON de estado; si el principal está corrupto (p.ej. corte de luz
+        a mitad de escritura) cae al .bak del último estado bueno. None = sin estado."""
+        for path in (self._file, self._file.with_suffix(self._file.suffix + ".bak")):
+            if not path.exists():
+                continue
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue  # corrupto → intenta el siguiente (.bak)
+        return None
+
     def _load(self) -> None:
-        if not self._file.exists():
-            return
-        try:
-            data = json.loads(self._file.read_text(encoding="utf-8"))
-        except Exception:
+        data = self._read_state_file()
+        if data is None:
             return
         runs = data.get("runs", {})
         self.runs = {int(k): v for k, v in runs.items()}
@@ -135,13 +151,24 @@ class BotState:
             run["pending_reasons"] = {int(k): v for k, v in (run.get("pending_reasons") or {}).items()}
             if run.get("status") == "running":
                 run["status"] = "paused"
-                run["stop_reason"] = "Reinicio del bridge: la estrategia arrancó PAUSADA por seguridad."
+                run["stop_reason"] = RESTART_PAUSE_REASON
 
     def save(self) -> None:
         with self._lock:
             data = {"runs": self.runs, "day": self.day, "portfolio_heat_pct": self.portfolio_heat_pct}
+        payload = json.dumps(data, default=str, ensure_ascii=False)
         try:
-            self._file.write_text(json.dumps(data, default=str, ensure_ascii=False), encoding="utf-8")
+            # Escritura ATÓMICA: escribe a un temporal y os.replace() (atómico en el mismo
+            # volumen). Un corte de luz nunca deja el JSON a medias. Antes de reemplazar,
+            # conserva el estado bueno anterior como .bak (red de seguridad extra).
+            tmp = self._file.with_suffix(self._file.suffix + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            if self._file.exists():
+                try:  # .bak = copia del último bueno; el primario sigue presente hasta el replace
+                    shutil.copyfile(self._file, self._file.with_suffix(self._file.suffix + ".bak"))
+                except Exception:
+                    pass
+            os.replace(tmp, self._file)
         except Exception:
             pass
 

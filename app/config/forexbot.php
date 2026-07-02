@@ -36,6 +36,27 @@ return [
         'chat_id' => env('TELEGRAM_CHAT_ID', ''),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Auto-reanudar tras reinicio (bot:autoresume)
+    |--------------------------------------------------------------------------
+    | Tras un reinicio (Windows Update, corte de luz, redeploy) el bridge arranca
+    | con las estrategias PAUSADAS por seguridad. Este comando las reanuda de forma
+    | segura si las condiciones son sanas, salvo que detecte un CRASH-LOOP.
+    |
+    |  - loop_window_min / loop_max_boots: N arranques del bridge en X min => crash-loop
+    |    => NO reanuda (queda pausado y avisa). Distingue reboot de máquina (1 arranque)
+    |    de un bridge que se reinicia solo en bucle.
+    |  - grace_min: tras un reinicio, cuánto esperar a que MT5/BD sanen antes de rendirse
+    |    (la conexión a MT5 del bridge es perezosa: tarda un poco en volver tras el boot).
+    */
+    'autoresume' => [
+        'enabled' => (bool) env('AUTORESUME_ENABLED', true),
+        'loop_window_min' => (int) env('AUTORESUME_LOOP_WINDOW_MIN', 10),
+        'loop_max_boots' => (int) env('AUTORESUME_LOOP_MAX_BOOTS', 3),
+        'grace_min' => (int) env('AUTORESUME_GRACE_MIN', 10),
+    ],
+
     'anthropic' => [
         'api_key' => env('ANTHROPIC_API_KEY', ''),
         'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),

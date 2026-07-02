@@ -10,6 +10,9 @@ __pycache__/
 
 # Estado del bot (persistencia local)
 bot_state.json
+bot_state.json.bak
+bot_state.json.tmp
+bridge_boots.json
 
 # Logs
 *.log
