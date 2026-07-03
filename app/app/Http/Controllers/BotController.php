@@ -85,6 +85,67 @@ class BotController extends Controller
     }
 
     /**
+     * Resumen de SALUD para la sección de salud de /bot (pegamento de LECTURA, solo-Laravel).
+     * Agrega tres fuentes que ya existen: bridge /health (MT5), bridge /bot/lifecycle
+     * (auto-reanudar) y scripts/watchdog_state.txt (watchdog) + un write real a la BD.
+     * CADA fuente en su propio try/catch con timeout corto: un fallo parcial degrada SOLO su
+     * chip (null / ok=false), nunca rompe la ruta ni la página. No toca el bridge ni el bot.
+     */
+    public function healthSummary(): JsonResponse
+    {
+        $out = [];
+
+        // Bridge alcanzable + MT5 (del /health; timeout corto para no colgar si el bridge cae).
+        try {
+            $h = $this->bridge->health(4);
+            $out['bridge'] = ['ok' => true];
+            $out['mt5'] = [
+                'connected' => (bool) ($h['connected'] ?? false),
+                'trade_allowed' => (bool) (($h['terminal'] ?? [])['trade_allowed'] ?? false),
+            ];
+        } catch (Throwable) {
+            $out['bridge'] = ['ok' => false];
+            $out['mt5'] = null;
+        }
+
+        // Watchdog: lee scripts/watchdog_state.txt (0 = sano) + frescura del mtime (vivo si
+        // se escribió hace < 6 min = ~3 ciclos del watchdog de 2 min).
+        try {
+            $path = base_path('../scripts/watchdog_state.txt');
+            if (is_file($path)) {
+                $val = (int) trim((string) @file_get_contents($path));
+                $age = time() - (int) @filemtime($path);
+                $fresh = $age >= 0 && $age < 360;
+                $out['watchdog'] = ['ok' => $val === 0 && $fresh, 'state' => $val, 'age_seconds' => $age, 'fresh' => $fresh];
+            } else {
+                $out['watchdog'] = null;
+            }
+        } catch (Throwable) {
+            $out['watchdog'] = null;
+        }
+
+        // Auto-reanudar: armado = config activa; último reinicio = boot_id (ISO exacto).
+        $armed = (bool) config('forexbot.autoresume.enabled', true);
+        try {
+            $life = $this->bridge->botLifecycle(4);
+            $out['autoresume'] = ['armed' => $armed, 'restart_paused' => (bool) ($life['restart_paused'] ?? false), 'last_boot' => $life['boot_id'] ?? null];
+        } catch (Throwable) {
+            $out['autoresume'] = ['armed' => $armed, 'restart_paused' => null, 'last_boot' => null];
+        }
+
+        // BD escribible: write real + select (igual que /healthz).
+        try {
+            \App\Models\Setting::query()->updateOrCreate(['key' => 'healthz'], ['value' => now()->toIso8601String()]);
+            \Illuminate\Support\Facades\DB::select('select 1');
+            $out['db'] = ['ok' => true];
+        } catch (Throwable) {
+            $out['db'] = ['ok' => false];
+        }
+
+        return response()->json($out);
+    }
+
+    /**
      * Preview ad-hoc de favoritos ANTES de iniciarlos (diálogo de confirmar): muestra el
      * SL/TP ATR y el lote por riesgo% REAL que se usaría, sin operar. Las specs se arman
      * en el servidor desde el favorito (no se confía en el cliente).

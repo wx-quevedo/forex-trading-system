@@ -6,6 +6,9 @@ import StrategyCard from '@/Components/bot/StrategyCard';
 import BotLiveChart from '@/Components/BotLiveChart';
 import BotDecisionPanel from '@/Components/BotDecisionPanel';
 import MarketStatus from '@/Components/bot/MarketStatus';
+import PositionsPanel from '@/Components/bot/PositionsPanel';
+import ActivityFeed, { type JournalEntry } from '@/Components/bot/ActivityFeed';
+import HealthBar, { type HealthSummary } from '@/Components/bot/HealthBar';
 import type { BotSignal, BotStatus, Candle, Favorite, Strategy } from '@/types';
 
 interface Props {
@@ -30,23 +33,43 @@ const suggestLot = (f: Favorite): number => {
  */
 export default function Control({ strategies, favorites, status: initialStatus }: Props) {
     const [status, setStatus] = useState<BotStatus>(initialStatus);
+    const [journal, setJournal] = useState<JournalEntry[]>([]);
+    const [health, setHealth] = useState<HealthSummary | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // --- Polling del estado (cada 3s) + Reverb ---
+    // --- Polling del estado + journal persistente (mismo ciclo, cada 3s) + Reverb ---
     const poll = useRef<() => void>(() => {});
     poll.current = async () => {
         try {
             const { data } = await window.axios.get('/bot/status');
             setStatus(data as BotStatus);
         } catch { /* bridge no accesible: reintenta al siguiente tick */ }
+        try {
+            const { data } = await window.axios.get('/bot/journal', { params: { limit: 60 } });
+            setJournal((data.entries ?? []) as JournalEntry[]);
+        } catch { /* journal no accesible: mantiene lo último */ }
+    };
+    // --- Salud del sistema: ciclo MÁS LENTO (cada 15s; cambia despacio) ---
+    const pollHealth = useRef<() => void>(() => {});
+    pollHealth.current = async () => {
+        try {
+            const { data } = await window.axios.get('/bot/health-summary');
+            setHealth(data as HealthSummary);
+        } catch { /* la ruta degrada por su cuenta; si ni responde, mantiene lo último */ }
     };
     useEffect(() => {
+        poll.current(); // carga inmediata (el journal jsonl no viene en las props)
+        pollHealth.current();
         const id = window.setInterval(() => poll.current(), 3000);
+        const idH = window.setInterval(() => pollHealth.current(), 15000);
         const ch = window.Echo?.channel('bot');
         ch?.listen('.bot.updated', (e: { status: BotStatus }) => setStatus(e.status));
-        return () => { window.clearInterval(id); ch?.stopListening('.bot.updated'); };
+        return () => { window.clearInterval(id); window.clearInterval(idH); ch?.stopListening('.bot.updated'); };
     }, []);
+
+    // Salud degradada (algo crítico en rojo) → la barra global lo refleja como "Problema".
+    const healthDegraded = !!health && (health.bridge?.ok === false || (health.mt5 != null && !health.mt5.connected) || health.db?.ok === false);
 
     const action = async (url: string, body?: Record<string, unknown>) => {
         setBusy(true);
@@ -72,6 +95,7 @@ export default function Control({ strategies, favorites, status: initialStatus }
 
     const runs = status.runs ?? [];
     const stratById = useMemo(() => Object.fromEntries(strategies.map((s) => [s.id, s])), [strategies]);
+    const strategyName = (sid?: number) => (sid != null ? stratById[sid]?.name ?? `#${sid}` : '—');
 
     // --- Selección para el gráfico grande de la derecha ---
     const [selectedSid, setSelectedSid] = useState<number | null>(null);
@@ -205,11 +229,12 @@ export default function Control({ strategies, favorites, status: initialStatus }
                 {error && <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-2 text-sm text-loss">{error}</div>}
 
                 {/* 1 · Barra de estado global (sticky) */}
-                <GlobalBar status={status} busy={busy} onPauseAll={pauseAll} onResumeAll={resumeAll} onPanic={panic} />
+                <GlobalBar status={status} busy={busy} degraded={healthDegraded} onPauseAll={pauseAll} onResumeAll={resumeAll} onPanic={panic} />
 
-                {/* 2 · Sidebar (tarjetas selectoras) + gráfico grande de la seleccionada */}
-                <div className="grid grid-cols-1 gap-5 lg:grid-cols-[340px_1fr]">
-                    <div className="space-y-3">
+                {/* FILA 1 · El "ahora": sidebar (selectoras) + gráfico grande + posiciones abiertas */}
+                <div className="grid grid-cols-1 items-stretch gap-5 xl:grid-cols-[300px_1fr_320px]">
+                    {/* Col 1 · Sidebar de tarjetas dinámicas (marca el alto de la fila) */}
+                    <div className="flex flex-col gap-3">
                         {runs.length === 0 ? (
                             <div className="bui-placeholder">No hay estrategias en la cartera. Recarga tu cartera validada desde Favoritos.</div>
                         ) : (
@@ -231,47 +256,52 @@ export default function Control({ strategies, favorites, status: initialStatus }
                         <button type="button" className="bui-btn ghost" style={{ width: '100%' }} onClick={() => setShowPicker(true)} disabled={busy}>↻ Recargar de Favoritos</button>
                     </div>
 
-                    <div className="min-w-0">
+                    {/* Col 2 · Gráfico (crece en alto para igualar el sidebar: flex-fill + BotLiveChart fill) */}
+                    <div className="flex min-w-0 flex-col">
                         {chart && <MarketStatus symbol={chart.symbol} />}
-                        <div className="bui-chartpanel">
-                            <div className="bui-chart-head">
+                        <div className="bui-chartpanel flex min-h-0 flex-1 flex-col">
+                            <div className="bui-chart-head shrink-0">
                                 <div className="bui-chart-title">
                                     {chart ? <>{chart.symbol} <span className="type">· {chart.type}</span></> : 'Sin estrategia seleccionada'}
                                 </div>
                                 {chart && <div className="bui-chart-sub">{chart.timeframe}{selectedRun?.strategy.symbol ? ` · ${stratById[selectedRun.strategy_id]?.name ?? ''}` : ''}</div>}
                             </div>
                             {!chart ? (
-                                <div className="bui-chart-empty">Selecciona una estrategia del panel izquierdo para ver su gráfico.</div>
+                                <div className="bui-chart-empty bui-chart-body">Selecciona una estrategia del panel izquierdo para ver su gráfico.</div>
                             ) : candles.length === 0 ? (
-                                <div className="bui-chart-empty">Cargando velas…</div>
+                                <div className="bui-chart-empty bui-chart-body">Cargando velas…</div>
                             ) : (
-                                <BotLiveChart
-                                    candles={candles}
-                                    digits={digits}
-                                    strategyType={chart.type}
-                                    params={chart.params}
-                                    signals={chartSignals}
-                                    positions={chartPositions}
-                                    closedTrades={chartClosed}
-                                    onSelectSignal={setSelectedSignal}
-                                    height={520}
-                                />
+                                <div className="bui-chart-body">
+                                    <BotLiveChart
+                                        candles={candles}
+                                        digits={digits}
+                                        strategyType={chart.type}
+                                        params={chart.params}
+                                        signals={chartSignals}
+                                        positions={chartPositions}
+                                        closedTrades={chartClosed}
+                                        onSelectSignal={setSelectedSignal}
+                                        fill
+                                    />
+                                </div>
                             )}
                         </div>
                         {selectedSignal && chart && (
-                            <div className="mt-3">
+                            <div className="mt-3 shrink-0">
                                 <BotDecisionPanel signal={selectedSignal} strategyType={chart.type} params={chart.params} lot={chart.lot} digits={digits} onClose={() => setSelectedSignal(null)} />
                             </div>
                         )}
                     </div>
+
+                    {/* Col 3 · Posiciones abiertas ahora mismo (tarjetas compactas, junto al precio) */}
+                    <PositionsPanel positions={status.positions ?? []} runs={runs} />
                 </div>
 
-                {/* 3-4 · Posiciones + Actividad (Parte 2) · 5 · Salud (Parte 3) — placeholders */}
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <div className="bui-placeholder">Posiciones abiertas — llega en la Parte 2</div>
-                    <div className="bui-placeholder">Actividad (journal) — llega en la Parte 2</div>
-                </div>
-                <div className="bui-placeholder">Salud del sistema — llega en la Parte 3</div>
+                {/* FILA 2 · Actividad (journal) a ancho completo — histórico/auditoría */}
+                <ActivityFeed journal={journal} events={status.journal ?? []} strategyName={strategyName} />
+
+                {/* FILA 3 · Salud del sistema (ancho completo) */}
+                <HealthBar health={health} lastSignalAt={status.signals?.[0]?.evaluated_at} loading={health === null} />
             </div>
 
             {/* Selector de Favoritos → confirmación */}

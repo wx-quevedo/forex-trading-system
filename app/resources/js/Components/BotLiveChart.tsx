@@ -31,6 +31,7 @@ interface Props {
     closedTrades: BotClosedTrade[];
     onSelectSignal: (s: BotSignal | null) => void;
     height?: number;
+    fill?: boolean; // si true, la altura la marca el contenedor (crece con el layout) en vez de `height` fijo
     focus?: { from: number; to: number }; // zoom inicial a una operación (Parte B)
     showClosedZones?: boolean; // dibujar zonas TP/SL de los trades cerrados
 }
@@ -77,7 +78,7 @@ interface Bundle {
  * entrada prominente en la vela de ejecución (desde la posición/trade real),
  * zonas TP/SL estilo TradingView, tooltip con detalle de la orden.
  */
-export default function BotLiveChart({ candles, digits = 5, strategyType, params, signals, positions, closedTrades, onSelectSignal, height = 480, focus, showClosedZones }: Props) {
+export default function BotLiveChart({ candles, digits = 5, strategyType, params, signals, positions, closedTrades, onSelectSignal, height = 480, fill, focus, showClosedZones }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const tooltipRef = useRef<HTMLDivElement>(null);
     const b = useRef<Bundle | null>(null);
@@ -97,7 +98,7 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
 
         const chart = createChart(container, {
             width: container.clientWidth,
-            height,
+            height: fill ? (container.clientHeight || 440) : height,
             layout: { background: { type: ColorType.Solid, color: C.bg }, textColor: C.text, fontFamily: "'JetBrains Mono', monospace", panes: { separatorColor: C.border, separatorHoverColor: C.border } },
             grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
             rightPriceScale: { borderColor: C.border },
@@ -206,7 +207,11 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
         if (panes[1]) panes[1].setStretchFactor(1.2);
 
         const ro = new ResizeObserver((entries) => {
-            for (const e of entries) chart.applyOptions({ width: e.contentRect.width });
+            for (const e of entries) {
+                chart.applyOptions(fill
+                    ? { width: e.contentRect.width, height: Math.max(1, Math.floor(e.contentRect.height)) }
+                    : { width: e.contentRect.width });
+            }
         });
         ro.observe(container);
 
@@ -353,8 +358,8 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
     }, [positions, candles, strategyType, closedTrades, showClosedZones]);
 
     return (
-        <div className="relative">
-            <div ref={containerRef} className="w-full" />
+        <div className={fill ? 'absolute inset-0' : 'relative'}>
+            <div ref={containerRef} className={`w-full ${fill ? 'h-full' : ''}`} />
             <div
                 ref={tooltipRef}
                 className="pointer-events-none absolute z-20 hidden max-w-[220px] rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg"

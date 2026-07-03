@@ -255,6 +255,32 @@ body {
 .bui-chart-title .type { color: var(--text-3); font-weight: 500; }
 .bui-chart-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
 .bui-chart-empty { padding: 60px 20px; text-align: center; color: var(--text-3); font-size: 13px; }
+/* Cuerpo del gráfico: crece para llenar la columna (que el grid estira al alto del sidebar),
+ * con un mínimo para que nunca quede diminuto (móvil / sidebar corto). */
+.bui-chart-body { position: relative; flex: 1 1 auto; min-height: 440px; }
+
+/* ── Tarjetas compactas de posición (columna derecha de la fila 1) ── */
+.bui-poscol-head { font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 650; color: var(--text-2); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+.bui-poscol-head .count { color: var(--text-3); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.bui-poscol-empty { border: 1px dashed var(--border); border-radius: 10px; padding: 22px 16px; text-align: center; color: var(--text-3); font-size: 12.5px; line-height: 1.5; }
+.bui-poscard { background: linear-gradient(180deg, var(--surface), #13171d); border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; box-shadow: var(--shadow); }
+.bui-poscard.buy { border-top: 2px solid var(--pos); }
+.bui-poscard.sell { border-top: 2px solid var(--neg); }
+.bui-poscard-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.bui-poscard-strat { font-size: 12.5px; font-weight: 650; letter-spacing: -0.01em; }
+.bui-poscard-strat .type { color: var(--text-3); font-weight: 500; }
+.bui-poscard-dir { font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.bui-poscard-dir.buy { background: var(--pos-wash); color: #7fd9c7; }
+.bui-poscard-dir.sell { background: var(--neg-wash); color: #f79aa1; }
+.bui-poscard-pnl { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; margin-top: 8px; }
+.bui-poscard-pnl.up { color: var(--pos); }
+.bui-poscard-pnl.down { color: var(--neg); }
+.bui-poscard-px { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.bui-poscard-px .arrow { color: var(--text-3); }
+.bui-poscard-sltp { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; margin-top: 4px; display: flex; gap: 10px; }
+.bui-poscard-sltp .sl { color: var(--neg); }
+.bui-poscard-sltp .tp { color: var(--pos); }
+.bui-poscard-meta { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-3); margin-top: 6px; }
 
 /* ── Placeholder de secciones en construcción (Partes 2-3) ── */
 .bui-placeholder {
@@ -262,3 +288,55 @@ body {
     color: var(--text-3); font-size: 13px; text-align: center; background: rgba(255, 255, 255, 0.01);
 }
 .bui-section-label { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 650; color: var(--text-2); margin: 0 0 12px; }
+
+/* ── Parte 2: paneles de Posiciones (tabla densa) + Actividad (feed) ── */
+.bui-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; }
+.bui-panel-head { padding: 10px 14px; border-bottom: 1px solid var(--border-soft); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 650; color: var(--text-2); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.bui-panel-head .count { color: var(--text-3); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.bui-panel-empty { padding: 34px 18px; text-align: center; color: var(--text-3); font-size: 13px; line-height: 1.5; }
+
+.bui-tblwrap { overflow-x: auto; }
+.bui-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.bui-tbl thead th { text-align: left; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+.bui-tbl thead th.r, .bui-tbl td.num { text-align: right; }
+.bui-tbl tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+.bui-tbl tbody tr:last-child td { border-bottom: none; }
+.bui-tbl tbody tr:hover td { background: rgba(255, 255, 255, 0.015); }
+.bui-tbl .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.bui-tbl .dir-buy { color: var(--pos); font-weight: 650; }
+.bui-tbl .dir-sell { color: var(--neg); font-weight: 650; }
+.bui-tbl .pnl-up { color: var(--pos); font-weight: 600; }
+.bui-tbl .pnl-down { color: var(--neg); font-weight: 600; }
+.bui-tbl .sl { color: var(--neg); }
+.bui-tbl .tp { color: var(--pos); }
+.bui-tbl .muted { color: var(--text-3); }
+
+.bui-feed { max-height: 440px; overflow-y: auto; }
+.bui-feeditem { display: grid; grid-template-columns: auto auto 1fr; gap: 11px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid var(--border-soft); }
+.bui-feeditem:last-child { border-bottom: none; }
+.bui-feed-time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+.bui-feed-tag { font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; white-space: nowrap; align-self: center; }
+.bui-feed-body { min-width: 0; }
+.bui-feed-strat { font-size: 12px; font-weight: 600; }
+.bui-feed-detail { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-2); margin-top: 2px; overflow-wrap: anywhere; }
+.bui-tag-open { background: var(--pos-wash); color: #7fd9c7; }
+.bui-tag-up { background: var(--pos-wash); color: #7fd9c7; }
+.bui-tag-down { background: var(--neg-wash); color: #f79aa1; }
+.bui-tag-warn { background: var(--warn-wash); color: #f5c578; }
+.bui-tag-neg { background: var(--neg-wash); color: #f79aa1; }
+.bui-tag-idle { background: var(--idle-wash); color: #97a2b2; }
+.bui-tag-accent { background: rgba(59, 130, 246, 0.14); color: #9ec1ff; }
+
+/* ── Parte 3: chips de salud del sistema ── */
+.bui-health { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.bui-chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 7px 13px; font-size: 12px; white-space: nowrap; }
+.bui-chip .d { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.bui-chip.ok .d { background: var(--pos); }
+.bui-chip.warn .d { background: var(--warn); }
+.bui-chip.bad .d { background: var(--neg); }
+.bui-chip.unknown .d { background: var(--idle); }
+.bui-chip .lab { font-weight: 600; color: var(--text); }
+.bui-chip.bad .lab { color: #f79aa1; }
+.bui-chip.warn .lab { color: #f5c578; }
+.bui-chip.unknown .lab { color: var(--text-2); }
+.bui-chip .sub { color: var(--text-3); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; }

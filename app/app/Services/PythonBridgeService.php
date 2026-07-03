@@ -65,10 +65,10 @@ class PythonBridgeService
     }
 
     // --- Salud -----------------------------------------------------------
-    public function health(): array
+    public function health(?int $timeout = null): array
     {
-        // /health no requiere API key.
-        return Http::baseUrl($this->baseUrl)->timeout($this->timeout)
+        // /health no requiere API key. Timeout override para chequeos de salud (corto).
+        return Http::baseUrl($this->baseUrl)->timeout($timeout ?? $this->timeout)
             ->acceptJson()->get('/health')->json() ?? [];
     }
 
@@ -284,9 +284,9 @@ class PythonBridgeService
     }
 
     /** Señales del ciclo de vida del bridge (arranques/uptime SO/pausa-por-reinicio) para bot:autoresume. */
-    public function botLifecycle(): array
+    public function botLifecycle(?int $timeout = null): array
     {
-        return $this->request('GET', '/bot/lifecycle');
+        return $this->request('GET', '/bot/lifecycle', [], $timeout);
     }
 
     /** Preview de fidelidad (Fase 1): SL/TP/lote que el ejecutor usaría, sin operar. Timeout amplio (corre backtests). */
