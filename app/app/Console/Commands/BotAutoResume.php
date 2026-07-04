@@ -10,6 +10,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -77,15 +78,28 @@ class BotAutoResume extends Command
         [$healthy, $reason, $count] = $this->health($bridge);
 
         if ($healthy) {
+            // SOLO las que el fail-safe pausó por el reinicio (restart_paused_ids del bridge).
+            // NUNCA todas: una pausa por circuit breaker / arme caducado / manual es
+            // intencional y no debe revertirse por un reinicio.
+            $ids = array_values(array_unique(array_map('intval', $life['restart_paused_ids'] ?? [])));
+            if (empty($ids)) {
+                // Robustez: sin ids identificados NO reanudamos nada (jamás caemos a "todas").
+                // No marcamos gestionado → si fue un glitch del payload, se reintenta al minuto.
+                Log::warning('bot:autoresume: restart_paused=true pero restart_paused_ids vacío → no se reanuda nada (sin fallback a "todas").');
+                return self::SUCCESS;
+            }
             try {
-                $bridge->botResume(null); // reanuda TODAS las pausadas-por-reinicio
+                foreach ($ids as $sid) {
+                    $bridge->botResume($sid);
+                }
             } catch (Throwable $e) {
                 // No pudimos reanudar: no marcamos como gestionado → se reintenta al minuto.
                 return self::SUCCESS;
             }
             $when = $this->bootLocal($bootId)?->format('H:i') ?? '??:??';
+            $n = count($ids);
             $this->notifyRestart($tg, "\u{267B}\u{FE0F} <b>Reinicio detectado</b> a las {$when}. "
-                . "Condiciones sanas. Reanudé <b>{$count}</b> estrategia(s) automáticamente." . $this->originHint($life));
+                . "Condiciones sanas. Reanudé <b>{$n}</b> estrategia(s) pausada(s) por el reinicio." . $this->originHint($life));
             Cache::forever(self::K_HANDLED, $bootId);
             return self::SUCCESS;
         }

@@ -63,7 +63,8 @@ class BotAutoResumeTest extends TestCase
             $m->shouldReceive('botLifecycle')->andReturn($this->lifecycle($boot));
             $m->shouldReceive('account')->andReturn(['balance' => 10000.0]);
             $m->shouldReceive('botStatus')->andReturn($this->healthyStatus());
-            $m->shouldReceive('botResume')->once()->with(null)->andReturn([]); // UNA sola vez pese a 2 corridas
+            // SOLO el id pausado-por-reinicio (33), no todas (null). UNA vez pese a 2 corridas.
+            $m->shouldReceive('botResume')->once()->with(33)->andReturn([]);
         });
         $this->mockTelegram(fn (MockInterface $m) => $m->shouldReceive('notify')->once()
             ->withArgs(fn ($ev, $txt) => $ev === 'restart' && str_contains($txt, 'Reanudé'))->andReturn(true));
@@ -72,6 +73,43 @@ class BotAutoResumeTest extends TestCase
         $this->assertSame($boot, Cache::get(self::K_HANDLED));
         // Segunda corrida: mismo boot ya gestionado → no reanuda ni notifica de nuevo.
         $this->artisan('bot:autoresume')->assertExitCode(0);
+    }
+
+    public function test_reanuda_solo_los_ids_del_reinicio_no_todas(): void
+    {
+        // El bridge reporta 2 ids pausados por reinicio (33, 39); otra (45) está pausada
+        // por otro motivo (no viene en restart_paused_ids) → NO debe reanudarse.
+        $boot = now()->toIso8601String();
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) use ($boot) {
+            $m->shouldReceive('botLifecycle')->andReturn($this->lifecycle($boot, ['restart_paused_ids' => [33, 39]]));
+            $m->shouldReceive('account')->andReturn(['balance' => 10000.0]);
+            $m->shouldReceive('botStatus')->andReturn($this->healthyStatus());
+            $m->shouldReceive('botResume')->once()->with(33)->andReturn([]);
+            $m->shouldReceive('botResume')->once()->with(39)->andReturn([]);
+            $m->shouldReceive('botResume')->with(null)->never();   // JAMÁS "todas"
+            $m->shouldReceive('botResume')->with(45)->never();     // la pausada por otro motivo, intacta
+        });
+        $this->mockTelegram(fn (MockInterface $m) => $m->shouldReceive('notify')->once()->andReturn(true));
+
+        $this->artisan('bot:autoresume')->assertExitCode(0);
+        $this->assertSame($boot, Cache::get(self::K_HANDLED));
+    }
+
+    public function test_ids_del_reinicio_vacios_no_reanuda_nada(): void
+    {
+        // Robustez: restart_paused=true pero restart_paused_ids vacío → NO reanuda nada
+        // (sin fallback a "todas") y NO marca gestionado (reintenta).
+        $boot = now()->toIso8601String();
+        $this->mock(PythonBridgeService::class, function (MockInterface $m) use ($boot) {
+            $m->shouldReceive('botLifecycle')->andReturn($this->lifecycle($boot, ['restart_paused_ids' => []]));
+            $m->shouldReceive('account')->andReturn(['balance' => 10000.0]);
+            $m->shouldReceive('botStatus')->andReturn($this->healthyStatus());
+            $m->shouldReceive('botResume')->never();   // nada, ni por id ni null
+        });
+        $this->mockTelegram(fn (MockInterface $m) => $m->shouldReceive('notify')->never());
+
+        $this->artisan('bot:autoresume')->assertExitCode(0);
+        $this->assertNull(Cache::get(self::K_HANDLED));   // no marcado → reintentará
     }
 
     public function test_crash_loop_no_reanuda_y_avisa(): void

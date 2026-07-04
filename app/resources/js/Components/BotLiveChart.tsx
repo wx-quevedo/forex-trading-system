@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
     createChart,
     CandlestickSeries,
@@ -32,8 +32,15 @@ interface Props {
     onSelectSignal: (s: BotSignal | null) => void;
     height?: number;
     fill?: boolean; // si true, la altura la marca el contenedor (crece con el layout) en vez de `height` fijo
+    savedView?: { from: number; to: number } | null; // vista guardada por-estrategia (rango temporal, ya desplazado por TZ) a restaurar
     focus?: { from: number; to: number }; // zoom inicial a una operación (Parte B)
     showClosedZones?: boolean; // dibujar zonas TP/SL de los trades cerrados
+}
+
+/** API imperativa para "Guardar/Reset vista": leer el rango visible actual y volver a la default. */
+export interface BotLiveChartHandle {
+    getVisibleRange: () => { from: number; to: number } | null;
+    fitDefault: () => void;
 }
 
 const C = {
@@ -78,10 +85,19 @@ interface Bundle {
  * entrada prominente en la vela de ejecución (desde la posición/trade real),
  * zonas TP/SL estilo TradingView, tooltip con detalle de la orden.
  */
-export default function BotLiveChart({ candles, digits = 5, strategyType, params, signals, positions, closedTrades, onSelectSignal, height = 480, fill, focus, showClosedZones }: Props) {
+const BotLiveChart = forwardRef<BotLiveChartHandle, Props>(function BotLiveChart({ candles, digits = 5, strategyType, params, signals, positions, closedTrades, onSelectSignal, height = 480, fill, savedView, focus, showClosedZones }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const tooltipRef = useRef<HTMLDivElement>(null);
     const b = useRef<Bundle | null>(null);
+
+    // API imperativa para los botones "Guardar vista" / "Reset vista" (viven en el header del padre).
+    useImperativeHandle(ref, () => ({
+        getVisibleRange: () => {
+            const r = b.current?.chart.timeScale().getVisibleRange();
+            return r ? { from: r.from as number, to: r.to as number } : null;
+        },
+        fitDefault: () => { b.current?.chart.timeScale().fitContent(); },
+    }), []);
     const infoByTime = useRef<Map<number, Info>>(new Map());
     const onSelectRef = useRef(onSelectSignal);
     onSelectRef.current = onSelectSignal;
@@ -268,8 +284,26 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
         }
 
         if (wasFirst) {
-            if (focus) bundle.chart.timeScale().setVisibleRange({ from: t(focus.from), to: t(focus.to) });
-            else bundle.chart.timeScale().fitContent();
+            // Vista inicial: focus (TradeDetail) > vista guardada por-estrategia > fitContent (default).
+            // La vista guardada se descarta si no solapa con las velas actuales (símbolo cambiado /
+            // rango corrupto) → cae limpio a fitContent, nunca deja el chart en blanco.
+            const first = t(candles[0].time);
+            const last = t(candles[candles.length - 1].time);
+            const savedValid = savedView
+                && Number.isFinite(savedView.from) && Number.isFinite(savedView.to)
+                && savedView.from < savedView.to
+                && savedView.to > first && savedView.from < last;
+            if (focus) {
+                bundle.chart.timeScale().setVisibleRange({ from: t(focus.from), to: t(focus.to) });
+            } else if (savedValid) {
+                try {
+                    bundle.chart.timeScale().setVisibleRange({ from: savedView!.from as UTCTimestamp, to: savedView!.to as UTCTimestamp });
+                } catch {
+                    bundle.chart.timeScale().fitContent();
+                }
+            } else {
+                bundle.chart.timeScale().fitContent();
+            }
         } else if (follow.current && !focus) {
             bundle.chart.timeScale().scrollToRealTime();
         }
@@ -367,4 +401,6 @@ export default function BotLiveChart({ candles, digits = 5, strategyType, params
             />
         </div>
     );
-}
+});
+
+export default BotLiveChart;

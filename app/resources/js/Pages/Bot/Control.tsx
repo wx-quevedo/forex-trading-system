@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import GlobalBar from '@/Components/bot/GlobalBar';
 import StrategyCard from '@/Components/bot/StrategyCard';
-import BotLiveChart from '@/Components/BotLiveChart';
+import BotLiveChart, { type BotLiveChartHandle } from '@/Components/BotLiveChart';
 import BotDecisionPanel from '@/Components/BotDecisionPanel';
 import MarketStatus from '@/Components/bot/MarketStatus';
 import PositionsPanel from '@/Components/bot/PositionsPanel';
@@ -119,6 +119,41 @@ export default function Control({ strategies, favorites, status: initialStatus }
     const [candles, setCandles] = useState<Candle[]>([]);
     const [digits, setDigits] = useState(5);
     const [selectedSignal, setSelectedSignal] = useState<BotSignal | null>(null);
+
+    // --- Vista del gráfico guardada POR ESTRATEGIA (rango temporal) ---
+    // Vive en el padre (sobrevive al cambio de tarjeta) + espejo en localStorage (sobrevive a
+    // recargar la página). Si falta o está corrupta → el chart cae a fitContent (default).
+    const chartRef = useRef<BotLiveChartHandle>(null);
+    const savedViews = useRef<Record<number, { from: number; to: number } | null>>({});
+    const viewKey = (sid: number) => `forexbot.bot_view.${sid}`;
+    const getSavedView = (sid: number): { from: number; to: number } | null => {
+        if (sid in savedViews.current) return savedViews.current[sid];
+        let v: { from: number; to: number } | null = null;
+        try {
+            const raw = localStorage.getItem(viewKey(sid));
+            if (raw) {
+                const p = JSON.parse(raw);
+                if (p && Number.isFinite(p.from) && Number.isFinite(p.to) && p.from < p.to) v = { from: p.from, to: p.to };
+            }
+        } catch { /* corrupto → null → fitContent */ }
+        savedViews.current[sid] = v;
+        return v;
+    };
+    const saveView = () => {
+        const sid = selectedRun?.strategy_id;
+        if (sid == null) return;
+        const r = chartRef.current?.getVisibleRange();
+        if (!r) return;
+        savedViews.current[sid] = r;
+        try { localStorage.setItem(viewKey(sid), JSON.stringify(r)); } catch { /* cuota/modo privado */ }
+    };
+    const resetView = () => {
+        const sid = selectedRun?.strategy_id;
+        if (sid == null) return;
+        savedViews.current[sid] = null;
+        try { localStorage.removeItem(viewKey(sid)); } catch { /* noop */ }
+        chartRef.current?.fitDefault();
+    };
 
     // Velas del par/timeframe de la estrategia seleccionada (read-only; refresco 15s).
     const fetchCandles = useRef<() => void>(() => {});
@@ -261,10 +296,18 @@ export default function Control({ strategies, favorites, status: initialStatus }
                         {chart && <MarketStatus symbol={chart.symbol} />}
                         <div className="bui-chartpanel flex min-h-0 flex-1 flex-col">
                             <div className="bui-chart-head shrink-0">
-                                <div className="bui-chart-title">
-                                    {chart ? <>{chart.symbol} <span className="type">· {chart.type}</span></> : 'Sin estrategia seleccionada'}
+                                <div>
+                                    <div className="bui-chart-title">
+                                        {chart ? <>{chart.symbol} <span className="type">· {chart.type}</span></> : 'Sin estrategia seleccionada'}
+                                    </div>
+                                    {chart && <div className="bui-chart-sub">{chart.timeframe}{selectedRun?.strategy.symbol ? ` · ${stratById[selectedRun.strategy_id]?.name ?? ''}` : ''}</div>}
                                 </div>
-                                {chart && <div className="bui-chart-sub">{chart.timeframe}{selectedRun?.strategy.symbol ? ` · ${stratById[selectedRun.strategy_id]?.name ?? ''}` : ''}</div>}
+                                {chart && candles.length > 0 && (
+                                    <div className="flex items-center gap-2">
+                                        <button type="button" className="bui-btn sm primary" onClick={saveView} title="Recuerda el zoom/rango actual para esta estrategia (sobrevive al cambio de tarjeta y a recargar).">Guardar vista</button>
+                                        <button type="button" className="bui-btn sm" onClick={resetView} title="Descarta la vista guardada y vuelve al encaje por defecto.">Reset vista</button>
+                                    </div>
+                                )}
                             </div>
                             {!chart ? (
                                 <div className="bui-chart-empty bui-chart-body">Selecciona una estrategia del panel izquierdo para ver su gráfico.</div>
@@ -273,6 +316,8 @@ export default function Control({ strategies, favorites, status: initialStatus }
                             ) : (
                                 <div className="bui-chart-body">
                                     <BotLiveChart
+                                        ref={chartRef}
+                                        savedView={selectedRun ? getSavedView(selectedRun.strategy_id) : null}
                                         candles={candles}
                                         digits={digits}
                                         strategyType={chart.type}
