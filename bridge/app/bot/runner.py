@@ -8,6 +8,7 @@ y comment de su estrategia. El panic cierra TODO.
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +20,28 @@ from .portfolio import heat_would_exceed, position_risk
 from .state import bot_state, magic_for
 
 _DEFAULT_POLL = 10.0
+
+# Estado de mercado por-símbolo cacheado (TTL 90s) SOLO para el acumulador de caducidad;
+# la franja de /bot sigue pidiendo symbol_session fresco. El booleano abierto/cerrado
+# cambia como mucho 2 veces al día → 90s de lag es irrelevante y evita 4 llamadas/10s.
+_SESSION_TTL = 90.0
+_session_cache: dict[str, tuple[float, bool | None]] = {}
+
+
+def _market_open(symbol: str) -> bool | None:
+    """¿Mercado abierto para el símbolo? (cacheado 90s). None = no confirmable
+    (MT5 caído/lento) → el caller NO cuenta ese tiempo ni pausa (robustez)."""
+    mono = time.monotonic()
+    hit = _session_cache.get(symbol)
+    if hit is not None and (mono - hit[0]) < _SESSION_TTL:
+        return hit[1]
+    try:
+        sess = client.symbol_session(symbol)
+        is_open = bool(sess["open"]) if isinstance(sess, dict) and "open" in sess else None
+    except Exception:  # noqa: BLE001 - MT5 no confirmable
+        is_open = None
+    _session_cache[symbol] = (mono, is_open)
+    return is_open
 
 
 def _now() -> str:
@@ -95,6 +118,8 @@ class BotRunner:
                 run["stop_reason"] = None
                 run["error"] = None
                 run["last_activity"] = _now()  # re-armada ahora → reinicia la caducidad (C)
+                run["arm_open_hours"] = 0.0    # acumulador de mercado abierto a cero
+                run["arm_clock"] = _now()
                 # Reanudar limpia los contadores del circuit breaker: si no, una
                 # estrategia pausada por racha se volvería a pausar al instante.
                 bot_state.reset_circuit_counters(run)
@@ -197,15 +222,31 @@ class BotRunner:
     def _process_run(self, run: dict[str, Any]) -> None:
         bot_state.roll_day_if_needed(run)
         self._reconcile(run)
-        # Caducidad del arme (C): si lleva ARMADA sin abrir ninguna posición más de
-        # arm_expiry_hours, se auto-pausa (evita quedar armada indefinidamente sin recordarlo).
+        # Caducidad del arme (C, A-1): cuenta SOLO horas de MERCADO ABIERTO sin señal. El
+        # acumulador se congela con el mercado cerrado (finde) → una estrategia plana el
+        # viernes NO caduca durante el finde; salta solo tras N horas reales de sesión sin
+        # abrir (anomalía real, no ruido de finde).
         exp_h = float(run.get("arm_expiry_hours", 0) or 0)
-        if exp_h > 0 and not run.get("open_tickets") and _hours_since(run.get("last_activity")) >= exp_h:
-            run["status"] = "paused"
-            run["stop_reason"] = (f"Arme caducado: {exp_h:.0f}h sin señal. Pausada por seguridad; "
-                                  "reanúdala cuando quieras volver a armarla.")
-            journal.append("arm_expired", run, {"hours": exp_h})
-            return
+        if exp_h > 0 and not run.get("open_tickets"):
+            now_dt = datetime.now(tz=timezone.utc)
+            prev = run.get("arm_clock")
+            try:
+                prev_dt = datetime.fromisoformat(prev) if prev else now_dt
+            except Exception:  # noqa: BLE001
+                prev_dt = now_dt
+            run["arm_clock"] = now_dt.isoformat()
+            delta_h = (now_dt - prev_dt).total_seconds() / 3600.0
+            # Suma el delta SOLO si el mercado está ABIERTO (cacheado). Cerrado o None
+            # (no confirmable) → no suma. Se descartan deltas anómalos (<0 o >1h: gap/salto
+            # de reloj) para no volcar horas de golpe.
+            if 0 <= delta_h <= 1.0 and _market_open(run["symbol"]) is True:
+                run["arm_open_hours"] = float(run.get("arm_open_hours", 0.0)) + delta_h
+            if float(run.get("arm_open_hours", 0.0)) >= exp_h:
+                run["status"] = "paused"
+                run["stop_reason"] = (f"Arme caducado: {exp_h:.0f}h de mercado abierto sin señal. "
+                                      "Pausada por seguridad; reanúdala cuando quieras.")
+                journal.append("arm_expired", run, {"hours": exp_h})
+                return
         floating, daily = self._pnl(run)
         if daily_limit_hit(run["daily_loss_limit"], daily):
             run["status"] = "stopped"
@@ -294,6 +335,8 @@ class BotRunner:
                 "open_reason": rec.get("open_reason"), "open_indicators": rec.get("open_indicators"),
             })
             run["last_activity"] = _now()  # actividad reciente (renueva la caducidad del arme)
+            run["arm_open_hours"] = 0.0    # cerró → acumulador de caducidad a cero
+            run["arm_clock"] = _now()
             journal.append("close", run, {  # journal PERSISTENTE del cierre
                 "ticket": ticket, "direction": rec.get("direction"), "volume": rec.get("volume"),
                 "open_price": rec.get("open_price"), "close_price": close_price,
@@ -372,6 +415,8 @@ class BotRunner:
                                 }
                             # Arme "usado": abrió una posición → renueva la actividad (caducidad C).
                             run["last_activity"] = _now()
+                            run["arm_open_hours"] = 0.0    # abrió → acumulador de caducidad a cero
+                            run["arm_clock"] = _now()
                             # Journal PERSISTENTE de la apertura (sobrevive reinicios/corte de día).
                             journal.append("open", run, {
                                 "ticket": ticket, "direction": signal, "volume": res.get("volume"),

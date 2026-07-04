@@ -71,6 +71,10 @@ def new_run(config: dict[str, Any], magic: int) -> dict[str, Any]:
         "below_min": str(config.get("below_min") or "skip").lower(),
         # Caducidad del arme (C): auto-pausa si lleva N horas ARMADA sin abrir (0 = off).
         "arm_expiry_hours": float(config.get("arm_expiry_hours", 24) or 0),
+        # Caducidad A-1: acumulador de horas de MERCADO ABIERTO sin señal (se congela con
+        # el mercado cerrado). `arm_clock` = marca del último cómputo del delta.
+        "arm_open_hours": 0.0,
+        "arm_clock": _now_iso(),
         "last_activity": _now_iso(),  # armada ahora; se renueva al abrir/cerrar/reanudar
         "daily_loss_limit": float(config.get("daily_loss_limit", 100)),
         "max_positions": int(config.get("max_positions", 1)),

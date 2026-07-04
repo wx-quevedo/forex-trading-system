@@ -32,7 +32,9 @@ def os_uptime_s() -> float | None:
     En otros SO (o si falla) devuelve None → el auto-reanudar lo trata como 'desconocido'
     (no gatea sobre esto; es solo informativo)."""
     try:
-        return ctypes.windll.kernel32.GetTickCount64() / 1000.0  # type: ignore[attr-defined]
+        fn = ctypes.windll.kernel32.GetTickCount64  # type: ignore[attr-defined]
+        fn.restype = ctypes.c_uint64  # ULONGLONG: sin restype, ctypes lo trunca a 32-bit → envuelve ~49.7 días
+        return fn() / 1000.0
     except Exception:  # noqa: BLE001 - no-Windows o sin kernel32
         return None
 
