@@ -1,7 +1,7 @@
 # ForexBot — Subproyecto CRIPTO · Fase 2: modelo de costos + Explorador net/OOS/holdout
 
 **Fecha:** 2026-07-05 · **Continúa:** `FOREXBOT_FASE0_CRIPTO_DIAGNOSTICO.md` (arquitectura y contrato BrokerClient) y la Fase 1 (bridge `D:\cbot` :8001, BybitClient datos públicos, core forkeado byte-idéntico).
-**Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
+**Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web · **2b-iii cross-pair ETHUSDT**). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
 
 ---
 
@@ -75,13 +75,50 @@
   `ichimoku 12/52/104` domina también con SL/TP por ATR — consistente con la verificación manual.
   `ma_cross ema 20/50` es descubrimiento nuevo del Explorador (solo el holdout lo separó de la paja).
 
-## 4. Siguiente paso (pendiente)
+## 4. Cross-pair ETHUSDT (2b-iii) — COMPLETO. ¿Estructura o peculiaridad de BTC?
 
-1. **Cross-pair: validar las candidatas en ETHUSDT** (y luego más pares linear USDT) — mismas
-   configs congeladas, net+holdout. Un edge que solo existe en BTC es sospechoso; uno que se repite
-   en ETH es estructura. **Esto va ANTES de Favoritos cripto.**
-2. Favoritos/búsquedas guardadas cripto: columna `market` en `favorites`/`explore_searches`
-   (diferida a propósito en 2b-ii).
+`cbot: scripts/verify_crosspair_eth.py + docs/FASE2B_CROSSPAIR_ETH.md` (commit `7fb99de`).
+9 configs **CONGELADAS** (cero re-optimización) sobre ETHUSDT H4 2022-01→2026-07, costos
+completos con funding real de ETH (4.939 eventos verificados, 79 % positivos).
+
+- **Datos ETH verificados antes de correr**: tickSize 0.01 → point 0.01/pip 0.1/pip_value 0.1/
+  contract 1 (invariante monetaria OK); 9.877 velas H4 con cobertura completa desde 2022-01-01.
+- **Bug cazado**: `funding_history` truncaba rangos >3,7 años (max_pages=20 → faltaban ~10 meses
+  de funding en 2022). Arreglado (40 págs) + `ENGINE_VERSION=5` (caché invalidada). El re-sweep de
+  BTC con funding completo reproduce los MISMOS 6 finales de §3 con números casi idénticos.
+- **Resultado (criterio VIAJA: PF neto ETH >1.0 con y sin funding)**:
+
+  | Candidata | PF holdout BTC | PF BTC mismo rango | **PF ETH** | sin funding | Veredicto |
+  |---|--:|--:|--:|--:|---|
+  | **ichimoku 12/52/104 sin SL** | 1.492 | 1.329 | **1.150** | 1.148 | ✅ VIAJA |
+  | **ichimoku 12/52/104 ATR3/4** | 1.414 | 1.572 | **1.168** | 1.164 | ✅ VIAJA |
+  | **ichimoku 12/52/104 ATR3/3** | 1.670 | 1.593 | **1.096** | 1.091 | ✅ VIAJA |
+  | rsi 14/30/75 sin SL | 1.287 | 1.294 | **0.729** | 0.717 | ❌ |
+  | rsi 14/25/75 sin SL | 1.127 | 1.306 | **0.602** | 0.578 | ❌ |
+  | rsi 21/30/70 ATR3/4 | 1.226 | 1.146 | **0.906** | 0.897 | ❌ |
+  | ma_cross ema20/50 (×3 variantes) | 1.085-1.172 | 1.207-1.323 | **0.915-0.992** | ídem | ❌ |
+
+  La columna "BTC mismo rango" (todas >1) descarta el efecto ventana: el desplome en ETH es del PAR.
+- **Sweep nativo de ETH** (pregunta separada, mismo protocolo): sus 10 inside finales son OTRAS
+  familias — supertrend 14/2.0 (PF hold 1.287), bollinger 30/2.5 (1.59), donchian, cci, a 34-88
+  trd/año — **exactamente lo que murió en BTC**. (Estatus: descubrimientos de UN par, pendientes de
+  su propia validación cruzada, como lo estaban las candidatas BTC antes de esta sección.)
+
+**VEREDICTO**: solo **ichimoku 12/52/104 viaja — en sus TRES variantes** (PF ETH 1.10-1.17,
+modesto pero positivo y sin depender del funding). Las RSI de reversión son **par-específicas de
+BTC** (0.60-0.91 en ETH). **La familia "reversión de baja rotación" NO es estructura de cripto-H4**;
+cada par tiene carácter propio. Lo único con rasgos de estructura cross-pair: **ichimoku 12/52/104
+a rotación baja** — único superviviente de la cadena OOS → holdout virgen → sin funding →
+cross-pair. El activo transferible del subproyecto es el **pipeline de verificación**, no una
+familia de estrategias.
+
+## 5. Siguiente paso (pendiente)
+
+1. **Favoritos cripto** (columna `market` en `favorites`/`explore_searches`): entra validada
+   cross-pair SOLO ichimoku 12/52/104; las RSI, si entran, etiquetadas "solo BTC".
+2. (Opcional) tercer par (SOLUSDT u otro linear USDT líquido) para re-testear a ichimoku:
+   2 pares es evidencia, 3 sería estructura firme. Y validación cruzada inversa de los nativos de
+   ETH (supertrend/bollinger) sobre BTC — ya sabemos que mueren allí: refuerza el carácter por par.
 3. (Opcional) selector global de mercado encima de la ruta separada; más TFs/rangos si el tope de
    paginación lo permite.
 4. Fase 4 (lejana): ejecución testnet (auth firmada HMAC, orderLinkId, netting) — stubs 501 listos.
