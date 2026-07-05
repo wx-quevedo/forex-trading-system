@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\BotController;
 use App\Http\Controllers\BotHistoricoController;
+use App\Http\Controllers\CryptoExplorerController;
 use App\Http\Controllers\FavoriteController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExplorerController;
@@ -55,6 +56,16 @@ Route::middleware('auth')->group(function () {
     Route::get('/explorer/system-stats', [ExplorerController::class, 'systemStats'])->name('explorer.system-stats');
     Route::get('/explorer/coverage', [ExplorerController::class, 'coverage'])->name('explorer.coverage');
     Route::get('/coverage', [ExplorerController::class, 'coverageMap'])->name('coverage');
+
+    // --- Explorador CRIPTO (Fase 2b-ii): la MISMA página, bridge Bybit :8001 ---
+    // Subconjunto deliberado de rutas (sin searches/validate/coverage en v1 cripto):
+    // el holdout integrado del bridge cripto sustituye a "Validar top-N".
+    Route::get('/crypto/explorer', [CryptoExplorerController::class, 'show'])->name('crypto.explorer');
+    Route::post('/crypto/explorer/start', [CryptoExplorerController::class, 'start'])->name('crypto.explorer.start');
+    Route::get('/crypto/explorer/status', [CryptoExplorerController::class, 'status'])->name('crypto.explorer.status');
+    Route::get('/crypto/explorer/results', [CryptoExplorerController::class, 'results'])->name('crypto.explorer.results');
+    Route::post('/crypto/explorer/score', [CryptoExplorerController::class, 'score'])->name('crypto.explorer.score');
+    Route::post('/crypto/explorer/cancel', [CryptoExplorerController::class, 'cancel'])->name('crypto.explorer.cancel');
 
     // --- Favoritos + Bot Histórico (Fase 9) ---
     Route::get('/favorites', [FavoriteController::class, 'index'])->name('favorites');

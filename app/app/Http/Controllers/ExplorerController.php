@@ -30,8 +30,9 @@ use Throwable;
  */
 class ExplorerController extends Controller
 {
-    /** Fallback si el bridge está caído al renderizar la página. */
-    private const META_FALLBACK = [
+    /** Fallback si el bridge está caído al renderizar la página. (protected: lo
+     *  reusa CryptoExplorerController, que hereda todos los endpoints.) */
+    protected const META_FALLBACK = [
         'grid_sizes' => ['ma_cross' => 30, 'rsi' => 27, 'macd' => 9, 'bollinger' => 9, 'combined' => 8],
         'sl_choices' => [15, 20, 30, 50],
         'tp_choices' => [30, 40, 60, 100],
@@ -50,8 +51,8 @@ class ExplorerController extends Controller
     ];
 
     public function __construct(
-        private readonly PythonBridgeService $bridge,
-        private readonly ManualTuningService $manual,
+        protected readonly PythonBridgeService $bridge,
+        protected readonly ManualTuningService $manual,
     ) {}
 
     public function show(): Response
@@ -271,7 +272,7 @@ class ExplorerController extends Controller
     }
 
     /** Ejecuta una llamada al bridge devolviendo JSON y traduciendo errores. */
-    private function proxy(callable $fn): JsonResponse
+    protected function proxy(callable $fn): JsonResponse
     {
         try {
             return response()->json($fn());
@@ -283,7 +284,7 @@ class ExplorerController extends Controller
     }
 
     /** Como proxy pero devuelve un fallback en vez de error (para render inicial). */
-    private function safe(callable $fn, mixed $fallback): mixed
+    protected function safe(callable $fn, mixed $fallback): mixed
     {
         try {
             return $fn();

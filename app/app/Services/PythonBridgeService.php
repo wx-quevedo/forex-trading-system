@@ -31,6 +31,25 @@ class PythonBridgeService
         );
     }
 
+    /**
+     * Fábrica por MERCADO (Fase 2b-ii): 'forex' → bridge MT5 (:8000, el de siempre);
+     * 'crypto' → bridge Bybit (:8001, solo lectura). El default forex garantiza que
+     * ninguna vista existente cambie de comportamiento; cripto se opta explícitamente
+     * (rutas /crypto/*). Mismo contrato HTTP en ambos (X-API-Key, mismos endpoints).
+     */
+    public static function forMarket(string $market): self
+    {
+        if ($market === 'crypto') {
+            return new self(
+                rtrim((string) config('forexbot.bridge_crypto.url'), '/'),
+                (string) config('forexbot.bridge_crypto.api_key'),
+                (int) config('forexbot.bridge_crypto.timeout', 15),
+            );
+        }
+
+        return self::fromConfig();
+    }
+
     private function client(?int $timeout = null): PendingRequest
     {
         return Http::baseUrl($this->baseUrl)

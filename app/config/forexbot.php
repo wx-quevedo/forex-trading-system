@@ -20,6 +20,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Python Bybit Bridge — CRIPTO (Fase 2b, D:\cbot puerto 8001)
+    |--------------------------------------------------------------------------
+    |
+    | Bridge SEPARADO del forex (solo datos públicos de Bybit; la ejecución
+    | cripto llegará en Fase 4 vía testnet). Lo consume PythonBridgeService::
+    | forMarket('crypto'); con el default 'forex' ninguna vista existente cambia.
+    |
+    */
+    'bridge_crypto' => [
+        'url' => env('CRYPTO_BRIDGE_URL', 'http://127.0.0.1:8001'),
+        'api_key' => env('CRYPTO_BRIDGE_API_KEY', ''),
+        'timeout' => (int) env('CRYPTO_BRIDGE_TIMEOUT', 15),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Anthropic (Análisis IA — Fase 6)
     |--------------------------------------------------------------------------
     */

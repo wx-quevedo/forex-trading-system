@@ -31,6 +31,10 @@ interface Props {
     meta: ExploreMeta;
     context: { date_from: string; date_to: string; capital: number; val_date_from: string; val_date_to: string };
     savedSearches: SavedSearch[];
+    // 'crypto' = Explorador CRIPTO (/crypto/explorer, bridge Bybit 8001): mismas vistas,
+    // endpoints propios, métricas NETAS y 3er tramo holdout integrado. Default 'forex':
+    // la página forex renderiza EXACTAMENTE igual que antes (no recibe el prop).
+    market?: 'forex' | 'crypto';
 }
 
 // Resultado de la validación walk-forward de UNA fila (rango posterior del Contexto).
@@ -60,7 +64,9 @@ type SortKey =
     | 'capital_final' | 'costs' | 'return_pct' | 'net_pnl' | 'win_rate'
     | 'profit_factor' | 'max_drawdown_pct' | 'sharpe' | 'sortino' | 'calmar' | 'expectancy'
     | 'total_trades' | 'in_return' | 'out_return' | 'robustness' | 'regime' | 'priority' | 'id' | 'atr_period'
-    | 'wf_ratio' | 'wf_verdict' | 'wf_capital';
+    | 'wf_ratio' | 'wf_verdict' | 'wf_capital'
+    // Cripto (market='crypto'): columnas netas + tercer tramo holdout.
+    | 'trades_per_year' | 'pf_gross' | 'costs_eaten_pct' | 'pf_out' | 'holdout_pf' | 'holdout_return' | 'short_time_pct';
 
 const ATRPER_HELP = 'Periodo del ATR que produjo esta fila (modo ATR). Controla qué tan rápido el stop se adapta a la volatilidad: corto (7) = nervioso/reactivo, largo (21) = suave. Ordenar por aquí revela si el instrumento prefiere stops nerviosos o suaves. "—" en modo fijo.';
 
@@ -76,6 +82,16 @@ const WFRATIO_HELP = 'Ratio de cumplimiento del walk-forward: retorno ANUALIZADO
 const WFVERDICT_HELP = 'Veredicto walk-forward (misma lógica que el Bot Histórico): CUMPLE (≥70% de lo prometido y en positivo), SE DEGRADA (rinde menos pero positivo), FALLA (pierde o quiebra en datos nuevos), sin referencia (el backtest no prometía nada). Validación independiente: rango POSTERIOR que el optimizador nunca vio (a diferencia del In/Out-sample, que es interno).';
 const WFCAP_HELP = 'Capital final LOGRADO en el rango de validación (datos posteriores), para comparar de un vistazo con el capital final del backtest. Vacío hasta validar.';
 
+// --- Ayudas de las columnas CRIPTO (métricas netas + tercer tramo holdout) ---
+const OPSYEAR_HELP = 'Frecuencia REAL: operaciones por año en el periodo de barrido. En cripto el costo por trade es ~constante (fee % del notional), así que la frecuencia ES el costo: las candidatas que sobreviven suelen rotar poco (10-30 ops/año).';
+const PFGROSS_HELP = 'Profit factor BRUTO (sin fees/funding/slippage). Compáralo con el PF (neto): la distancia entre ambos es lo que se comen los costos. Un PF bruto alto con PF neto plano = estrategia que trabaja para el exchange.';
+const COSTSEAT_HELP = '% del beneficio BRUTO devorado por los costos (fees 0.055% taker/lado + funding 8h real + slippage 0.02%/lado). Negativo = el funding COBRADO superó fees+slippage (subsidio de régimen, no edge). El MACD murió aquí: 235% comido.';
+const PFOOS_HELP = 'Profit factor NETO en el tramo OUT-OF-SAMPLE (el que decide el ranking). Compáralo con el PF holdout: si OOS brilla y holdout se cae, era suerte seleccionada.';
+const HOLDPF_HELP = 'Profit factor NETO en el TERCER TRAMO (holdout final intocado, que ningún backtest del barrido vio). Solo se calcula para las candidatas top (congeladas, sin re-optimizar). ≥1.05 aguanta; <0.98 cayó. La prueba 2b-i: cci prometía 1.401 en OOS y dio 0.751 aquí.';
+const HOLDRET_HELP = 'Retorno NETO (%) logrado en el holdout intocado. La cifra honesta de "qué habría pasado después".';
+const SHORTPCT_HELP = '% del tiempo-en-posición en CORTO. Los cortos COBRAN funding cuando el rate es positivo (lo usual en BTC): mucha exposición corta = parte del brillo puede ser subsidio de funding regime-dependiente.';
+const FINAL_HELP = 'Veredicto FINAL = veredicto OOS ponderado por el holdout: aguanta (PF≥1.05) mantiene; plano (0.98-1.05) degrada un escalón; cayó (<0.98) → FUERA. Las filas fuera del top-N conservan su veredicto OOS (sin evidencia extra).';
+
 const PRIORITY_HELP = 'Pauta de PRIORIZACIÓN para validar (0-100), NO un veredicto de rentabilidad. Combina todas las métricas normalizadas por riesgo (no premia el retorno absoluto) y penaliza la fragilidad (drawdown alto no-lineal, expectativa delgada, overfit, mismatch de régimen). "Prioridad #1" = valídala primero en walk-forward; la validación sigue siendo obligatoria. Clic en el número para ver el desglose.';
 
 const SHARPE_HELP = 'Sharpe ratio (anualizado): retorno por unidad de volatilidad TOTAL de la equity. >1 bueno, >2 excelente. Penaliza la inestabilidad. "—" en filas ya cacheadas hasta re-explorar.';
@@ -85,17 +101,22 @@ const EXPECTANCY_HELP = 'Expectativa en R = win% × (TP/SL) − (1−win%). Valo
 const REGIME_HELP = 'Régimen de mercado del periodo analizado (común a todas las combinaciones de ese par/timeframe): TENDENCIA (alcista/bajista), RANGO o VOLÁTIL. Es contexto, no cambia los trades.';
 const MATCH_HELP = 'Idoneidad estrategia↔régimen. Reversión (RSI, Bollinger) encaja en RANGO; tendencia (MA cross, MACD) encaja en TENDENCIA. Un MISMATCH explica por qué una estrategia "buena" falló (p.ej. reversión sobre el oro en tendencia).';
 
-export default function Explorer({ schemas, symbols, timeframes, types, meta, context, savedSearches }: Props) {
+export default function Explorer({ schemas, symbols, timeframes, types, meta, context, savedSearches, market = 'forex' }: Props) {
+    const isCrypto = market === 'crypto';
+    // Prefijo de endpoints: la página cripto habla con /crypto/explorer/* (proxy al
+    // bridge Bybit 8001); la forex sigue con /explorer/* EXACTAMENTE igual que antes.
+    const base = isCrypto ? '/crypto/explorer' : '/explorer';
     // --- Selección del usuario ---
-    const [pairs, setPairs] = useState<string[]>([]);
+    const [pairs, setPairs] = useState<string[]>(isCrypto ? [...symbols] : []);
     const [selTypes, setSelTypes] = useState<string[]>(types);
     const sweepTfs = useMemo(() => meta.sweep_timeframes.filter((t) => timeframes.includes(t)), [meta.sweep_timeframes, timeframes]);
-    const [selTfs, setSelTfs] = useState<string[]>(sweepTfs);
-    const [sls, setSls] = useState<number[]>(meta.sl_choices);
-    const [tps, setTps] = useState<number[]>(meta.tp_choices);
+    const [selTfs, setSelTfs] = useState<string[]>(isCrypto ? sweepTfs.filter((t) => t === 'H4' || t === 'H1') : sweepTfs);
+    const [sls, setSls] = useState<number[]>(isCrypto ? meta.atr_sl_choices : meta.sl_choices);
+    const [tps, setTps] = useState<number[]>(isCrypto ? meta.atr_tp_choices : meta.tp_choices);
     const [risks, setRisks] = useState<number[]>(meta.risk_choices);
     // Modo SL/TP (Fase 1): fijo (pips) o adaptativo por ATR (multiplicadores).
-    const [slMode, setSlMode] = useState<'fixed' | 'atr'>('fixed');
+    // Cripto: ATR por defecto — un SL en "pips" ($1 en BTC) no significa nada a ~100k.
+    const [slMode, setSlMode] = useState<'fixed' | 'atr'>(isCrypto ? 'atr' : 'fixed');
     const atrPeriodChoices = meta.atr_period_choices ?? [7, 14, 21];
     const [atrPeriods, setAtrPeriods] = useState<number[]>([meta.atr_period_default || 14]);
     const slChoices = slMode === 'atr' ? meta.atr_sl_choices : meta.sl_choices;
@@ -161,18 +182,18 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         // motor SÍ produjo resultados (síntoma: "no hay resultados" con datos reales).
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                const { data } = await window.axios.get('/explorer/results');
+                const { data } = await window.axios.get(`${base}/results`);
                 setResults((data.results ?? []) as ExploreResultRow[]);
                 return;
             } catch {
                 await new Promise((r) => setTimeout(r, 600));
             }
         }
-    }, []);
+    }, [base]);
 
     const poll = useCallback(async () => {
         try {
-            const { data } = await window.axios.get('/explorer/status');
+            const { data } = await window.axios.get(`${base}/status`);
             setStatus(data as ExploreStatus);
             if (data.status !== 'running') {
                 stopPoll();
@@ -190,7 +211,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     useEffect(() => {
         (async () => {
             try {
-                const { data } = await window.axios.get('/explorer/status');
+                const { data } = await window.axios.get(`${base}/status`);
                 setStatus(data as ExploreStatus);
                 if (data.status === 'running') startPoll();
                 else if (data.results_count > 0) fetchResults();
@@ -211,7 +232,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         setValMap({});      // la validación previa ya no aplica a la corrida nueva
         setValMsg(null);
         try {
-            const { data } = await window.axios.post('/explorer/start', {
+            const { data } = await window.axios.post(`${base}/start`, {
                 pairs, types: selTypes, timeframes: selTfs,
                 date_from: period.date_from, date_to: period.date_to, capital,
                 sl_choices: sls, tp_choices: tps, risk_choices: risks, workers,
@@ -226,7 +247,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     };
 
     const cancel = async () => {
-        try { await window.axios.post('/explorer/cancel'); } catch { /* noop */ }
+        try { await window.axios.post(`${base}/cancel`); } catch { /* noop */ }
     };
 
     // --- Reporte derivado: filtrar + ordenar ---
@@ -446,10 +467,20 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
     };
 
     return (
-        <AppLayout title="Explorador de estrategias" wide>
-            <Head title="Explorador" />
+        <AppLayout title={isCrypto ? 'Explorador CRIPTO — Bybit (BTCUSDT)' : 'Explorador de estrategias'} wide>
+            <Head title={isCrypto ? 'Explorador CRIPTO' : 'Explorador'} />
 
             <div className="mb-4"><SystemStatsCard /></div>
+
+            {/* Cripto: qué cambia respecto al forex (métricas netas + 3 tramos). */}
+            {isCrypto && (
+                <div className="mb-4 rounded-lg border border-accent/40 bg-accent/5 px-4 py-3 text-xs text-text-secondary">
+                    <span className="mr-2 rounded bg-accent/15 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-accent">Cripto · Bybit · solo lectura</span>
+                    Todas las métricas son <span className="font-semibold text-text-primary">NETAS</span> (fee taker 0.055%/lado + funding 8h real + slippage 0.02%/lado) y cada barrido
+                    divide el rango en <span className="font-semibold text-text-primary">3 tramos</span>: optimización / selección OOS / <span className="font-semibold text-text-primary">holdout final intocado ({Math.round((meta.holdout_split_default ?? 0.15) * 100)}%)</span> donde
+                    los top-N se re-corren congelados — el veredicto FINAL pondera que aguanten (sin esto, el ranking selecciona suerte).
+                </div>
+            )}
 
             {/* --- Configuración de la búsqueda --- */}
             <section className="space-y-4 rounded-lg border border-border bg-bg-surface p-4">
@@ -571,7 +602,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                 <div className="mt-0.5 font-mono text-[11px]">
                                     {status.elapsed_seconds}s · {status.speed_per_sec}/s · {status.workers} núcleos ·
                                     <span className="text-profit"> {status.cache_hits.toLocaleString()} de caché</span> · {status.cache_misses.toLocaleString()} calculadas ·
-                                    MT5 {status.t_mt5_seconds}s vs cálculo {status.t_compute_seconds}s · {status.candle_fetches} descargas
+                                    {isCrypto ? 'Bybit' : 'MT5'} {status.t_mt5_seconds}s vs cálculo {status.t_compute_seconds}s · {status.candle_fetches} descargas
                                 </div>
                             )}
                         </div>
@@ -580,14 +611,31 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                             <FilterSelect label="Par" value={fPair} onChange={setFPair} options={[['all', 'Todos'], ...uniquePairs.map((p) => [p, p] as [string, string])]} />
                             <FilterSelect label="Tipo" value={fType} onChange={setFType} options={[['all', 'Todos'], ...uniqueTypes.map((t) => [t, schemas[t]?.label ?? t] as [string, string])]} />
                             <FilterSelect label="Idoneidad" value={fMatch} onChange={(v) => setFMatch(v as typeof fMatch)} options={[['all', 'Todas'], ['MATCH', 'Solo MATCH'], ['MISMATCH', 'Solo MISMATCH']]} />
-                            <input value={savedName} onChange={(e) => setSavedName(e.target.value)} placeholder="Nombre…"
-                                className="w-36 rounded-md border border-border bg-bg-elevated px-2 py-1.5 text-sm text-text-primary" />
-                            <button type="button" onClick={saveSearch} className="rounded-md border border-accent px-3 py-1.5 text-sm text-accent hover:bg-accent/10">Guardar esta búsqueda</button>
+                            {/* Guardar búsquedas: solo forex (falta columna `market`; v1 cripto lo omite). */}
+                            {!isCrypto && (
+                                <>
+                                    <input value={savedName} onChange={(e) => setSavedName(e.target.value)} placeholder="Nombre…"
+                                        className="w-36 rounded-md border border-border bg-bg-elevated px-2 py-1.5 text-sm text-text-primary" />
+                                    <button type="button" onClick={saveSearch} className="rounded-md border border-accent px-3 py-1.5 text-sm text-accent hover:bg-accent/10">Guardar esta búsqueda</button>
+                                </>
+                            )}
                             <button type="button" onClick={exportCsv} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated">Exportar CSV</button>
                         </div>
                     </div>
 
-                    {/* Validación walk-forward del top-N en el rango posterior del Contexto. */}
+                    {/* Cripto: la validación externa la SUSTITUYE el tercer tramo holdout,
+                        integrado en el barrido (columnas PF/Ret holdout + veredicto FINAL). */}
+                    {isCrypto && (
+                        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-bg-elevated/40 px-3 py-2.5 text-xs text-text-secondary">
+                            <span className="text-sm font-medium text-text-primary">Tercer tramo (holdout intocado)</span>
+                            {status?.holdout
+                                ? <span>{String(status.holdout.from).slice(0, 10)} → {String(status.holdout.to).slice(0, 10)} · {status.holdout.tested} candidatas top re-corridas CONGELADAS · el veredicto FINAL ya pondera si aguantan</span>
+                                : <span>se reserva automáticamente al final del rango en cada barrido</span>}
+                        </div>
+                    )}
+
+                    {/* Validación walk-forward del top-N en el rango posterior del Contexto (solo forex). */}
+                    {!isCrypto && (
                     <div className="flex flex-wrap items-center gap-2 border-b border-border bg-bg-elevated/40 px-3 py-2.5">
                         <span className="inline-flex items-center gap-1 text-sm font-medium text-text-primary">
                             Validación walk-forward
@@ -605,6 +653,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                         {valOverlap && <span className="text-xs text-loss">El rango de validación solapa con la optimización (corrígelo en Contexto).</span>}
                         {valMsg && !valOverlap && <span className="text-xs text-text-secondary">{valMsg}</span>}
                     </div>
+                    )}
 
                     {results.every((r) => r.verdict !== 'inside') && (
                         <div className="border-b border-border bg-bg-elevated/50 px-3 py-2.5 text-xs text-text-secondary">
@@ -633,22 +682,37 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                     <Th k="return_pct" label="Ret. neto" right s={sort} on={toggleSort} />
                                     <Th k="net_pnl" label="PnL neto" right s={sort} on={toggleSort} />
                                     <Th k="win_rate" label="Win%" right s={sort} on={toggleSort} />
-                                    <Th k="profit_factor" label="PF" right s={sort} on={toggleSort} />
+                                    <Th k="profit_factor" label={isCrypto ? 'PF neto' : 'PF'} right s={sort} on={toggleSort} />
+                                    {isCrypto && <Th k="pf_gross" label="PF bruto" right s={sort} on={toggleSort} help={PFGROSS_HELP} />}
+                                    {isCrypto && <Th k="costs_eaten_pct" label="% comido" right s={sort} on={toggleSort} help={COSTSEAT_HELP} />}
                                     <Th k="max_drawdown_pct" label="Max DD" right s={sort} on={toggleSort} />
                                     <Th k="sharpe" label="Sharpe" right s={sort} on={toggleSort} help={SHARPE_HELP} />
                                     <Th k="sortino" label="Sortino" right s={sort} on={toggleSort} help={SORTINO_HELP} />
                                     <Th k="calmar" label="Calmar" right s={sort} on={toggleSort} help={CALMAR_HELP} />
                                     <Th k="expectancy" label="Exp. R" right s={sort} on={toggleSort} help={EXPECTANCY_HELP} />
                                     <Th k="total_trades" label="Ops" right s={sort} on={toggleSort} />
+                                    {isCrypto && <Th k="trades_per_year" label="Ops/año" right s={sort} on={toggleSort} help={OPSYEAR_HELP} />}
                                     <Th k="in_return" label="Ret. In" right s={sort} on={toggleSort} help={INOUT_HELP} />
                                     <Th k="out_return" label="Ret. Out" right s={sort} on={toggleSort} help={INOUT_HELP} />
+                                    {isCrypto && <Th k="pf_out" label="PF OOS" right s={sort} on={toggleSort} help={PFOOS_HELP} />}
                                     <Th k="robustness" label="Robustez" s={sort} on={toggleSort} />
                                     <Th k="regime" label="Régimen" s={sort} on={toggleSort} help={REGIME_HELP} />
                                     <th className="px-3 py-2 font-medium"><span className="inline-flex items-center gap-1">Idoneidad<InfoTooltip text={MATCH_HELP} /></span></th>
-                                    <th className="px-3 py-2 font-medium">Veredicto</th>
-                                    <Th k="wf_ratio" label="WF cumpl." right s={sort} on={toggleSort} help={WFRATIO_HELP} />
-                                    <Th k="wf_verdict" label="WF veredicto" s={sort} on={toggleSort} help={WFVERDICT_HELP} />
-                                    <Th k="wf_capital" label="WF cap. val." right s={sort} on={toggleSort} help={WFCAP_HELP} />
+                                    <th className="px-3 py-2 font-medium">{isCrypto ? 'Veredicto OOS' : 'Veredicto'}</th>
+                                    {isCrypto ? (
+                                        <>
+                                            <Th k="holdout_pf" label="PF holdout" right s={sort} on={toggleSort} help={HOLDPF_HELP} />
+                                            <Th k="holdout_return" label="Ret. hold" right s={sort} on={toggleSort} help={HOLDRET_HELP} />
+                                            <Th k="short_time_pct" label="% corto" right s={sort} on={toggleSort} help={SHORTPCT_HELP} />
+                                            <th className="px-3 py-2 font-medium"><span className="inline-flex items-center gap-1">FINAL<InfoTooltip text={FINAL_HELP} /></span></th>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Th k="wf_ratio" label="WF cumpl." right s={sort} on={toggleSort} help={WFRATIO_HELP} />
+                                            <Th k="wf_verdict" label="WF veredicto" s={sort} on={toggleSort} help={WFVERDICT_HELP} />
+                                            <Th k="wf_capital" label="WF cap. val." right s={sort} on={toggleSort} help={WFCAP_HELP} />
+                                        </>
+                                    )}
                                     <th className="px-3 py-2" />
                                 </tr>
                             </thead>
@@ -679,14 +743,18 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.net_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>{fmtMoney(r.net_pnl)}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{(r.win_rate * 100).toFixed(1)}%</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.profit_factor != null ? fmtNumber(r.profit_factor) : '—'}</td>
+                                            {isCrypto && <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{r.pf_gross != null ? fmtNumber(r.pf_gross) : '—'}</td>}
+                                            {isCrypto && <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.costs_eaten_pct == null ? 'text-text-secondary' : r.costs_eaten_pct > 50 ? 'text-loss' : r.costs_eaten_pct > 25 ? 'text-warning' : 'text-profit'}`}>{r.costs_eaten_pct != null ? `${r.costs_eaten_pct}%` : '—'}</td>}
                                             <td className="px-3 py-1.5 text-right font-mono text-xs text-loss">{r.max_drawdown_pct}%</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.sharpe != null ? fmtNumber(r.sharpe) : '—'}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.sortino != null ? fmtNumber(r.sortino) : '—'}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs">{r.calmar != null ? r.calmar.toFixed(2) : '—'}</td>
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.expectancy == null ? '' : r.expectancy >= 0 ? 'text-profit' : 'text-loss'}`}>{r.expectancy != null ? `${r.expectancy >= 0 ? '+' : ''}${r.expectancy.toFixed(2)}` : '—'}</td>
                                             <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{r.total_trades}</td>
+                                            {isCrypto && <td className={`px-3 py-1.5 text-right font-mono text-xs ${(r.trades_per_year ?? 0) <= 35 ? 'text-profit' : (r.trades_per_year ?? 0) <= 80 ? 'text-warning' : 'text-loss'}`}>{r.trades_per_year ?? '—'}</td>}
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.in_return >= 0 ? 'text-profit' : 'text-loss'}`}>{r.in_return}%</td>
                                             <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.out_return >= 0 ? 'text-profit' : 'text-loss'}`}>{r.out_return}%</td>
+                                            {isCrypto && <td className="px-3 py-1.5 text-right font-mono text-xs">{r.pf_out != null ? fmtNumber(r.pf_out) : '—'}</td>}
                                             <td className="px-3 py-1.5 font-mono text-xs text-warning" title={`robustez ${r.robustness}`}>{stars(r.stars)}</td>
                                             <td className="px-3 py-1.5">
                                                 {r.regime
@@ -703,17 +771,40 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                                     ? <span className="rounded bg-loss/20 px-1.5 py-0.5 text-[10px] font-semibold text-loss" title="La cuenta perdió todo el capital (quiebra). No es operable.">Cuenta quebrada</span>
                                                     : <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${v.cls}`} title={r.verdict_label}>{v.label}</span>}
                                             </td>
-                                            {/* Walk-forward (rango de validación posterior). Vacío hasta pulsar "Validar top-N". */}
-                                            <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.wf_ratio == null ? 'text-text-secondary' : r.wf_ratio >= 70 ? 'text-profit' : r.wf_ratio > 0 ? 'text-warning' : 'text-loss'}`}>
-                                                {r.wf_ok === false ? <span title={r.wf_reason}>sin datos</span> : r.wf_ratio != null ? `${r.wf_ratio.toFixed(0)}%` : '—'}
-                                            </td>
+                                            {isCrypto ? (
+                                                <>
+                                                    {/* Tercer tramo holdout (solo top-N; congeladas, sin re-optimizar). */}
+                                                    <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.holdout_pf == null ? 'text-text-secondary' : r.holdout_pf >= 1.05 ? 'text-profit' : r.holdout_pf >= 0.98 ? 'text-warning' : 'text-loss'}`}>
+                                                        {r.holdout_pf != null ? fmtNumber(r.holdout_pf) : '—'}
+                                                    </td>
+                                                    <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.holdout_return == null ? 'text-text-secondary' : r.holdout_return >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                                        {r.holdout_return != null ? `${r.holdout_return >= 0 ? '+' : ''}${r.holdout_return}%` : '—'}
+                                                    </td>
+                                                    <td className="px-3 py-1.5 text-right font-mono text-xs text-text-secondary">{r.short_time_pct != null ? `${r.short_time_pct}%` : '—'}</td>
+                                                    <td className="px-3 py-1.5">
+                                                        {r.final_verdict
+                                                            ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${VERDICT[r.final_verdict].cls}`} title={r.final_verdict_label}>{VERDICT[r.final_verdict].label}</span>
+                                                            : <span className="text-[10px] text-text-secondary">—</span>}
+                                                    </td>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    {/* Walk-forward (rango de validación posterior). Vacío hasta pulsar "Validar top-N". */}
+                                                    <td className={`px-3 py-1.5 text-right font-mono text-xs ${r.wf_ratio == null ? 'text-text-secondary' : r.wf_ratio >= 70 ? 'text-profit' : r.wf_ratio > 0 ? 'text-warning' : 'text-loss'}`}>
+                                                        {r.wf_ok === false ? <span title={r.wf_reason}>sin datos</span> : r.wf_ratio != null ? `${r.wf_ratio.toFixed(0)}%` : '—'}
+                                                    </td>
+                                                    <td className="px-3 py-1.5">
+                                                        {r.wf_verdict
+                                                            ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${WF_VERDICT[r.wf_verdict].cls}`}>{WF_VERDICT[r.wf_verdict].label}</span>
+                                                            : <span className="text-[10px] text-text-secondary">—</span>}
+                                                    </td>
+                                                    <td className="px-3 py-1.5 text-right font-mono text-xs">{r.wf_capital != null ? fmtMoney(r.wf_capital) : '—'}</td>
+                                                </>
+                                            )}
                                             <td className="px-3 py-1.5">
-                                                {r.wf_verdict
-                                                    ? <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${WF_VERDICT[r.wf_verdict].cls}`}>{WF_VERDICT[r.wf_verdict].label}</span>
-                                                    : <span className="text-[10px] text-text-secondary">—</span>}
-                                            </td>
-                                            <td className="px-3 py-1.5 text-right font-mono text-xs">{r.wf_capital != null ? fmtMoney(r.wf_capital) : '—'}</td>
-                                            <td className="px-3 py-1.5">
+                                                {/* Favoritos/Laboratorio/Guardar son flujos FOREX (BD de estrategias);
+                                                    en cripto llegarán con la columna `market` (fase posterior). */}
+                                                {!isCrypto && (
                                                 <div className="flex items-center gap-1">
                                                     <button type="button" onClick={() => addFavorite(r)} className={`rounded border px-1.5 py-1 text-[13px] leading-none ${favAdded.has(_row_key(r)) ? 'border-warning text-warning' : 'border-border text-text-secondary hover:text-warning'}`} title="Añadir a favoritos">
                                                         {favAdded.has(_row_key(r)) ? '★' : '☆'}
@@ -721,6 +812,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                                     <button type="button" onClick={() => loadToLab(r)} className="rounded border border-border px-2 py-1 text-[11px] text-text-primary hover:bg-bg-elevated" title="Inspeccionar en el Laboratorio">Laboratorio</button>
                                                     <button type="button" onClick={() => setSaveRow(r)} className="rounded border border-profit/50 px-2 py-1 text-[11px] text-profit hover:bg-profit/10" title="Guardar como estrategia">Guardar</button>
                                                 </div>
+                                                )}
                                             </td>
                                         </tr>
                                     );
@@ -798,7 +890,7 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
 
             {/* Modal: guardar una combinación como estrategia */}
             {saveRow && <SaveModal row={saveRow} schemas={schemas} onClose={() => setSaveRow(null)} />}
-            {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} periodDays={periodDays} onClose={() => setScoreRow(null)} />}
+            {scoreRow && <ScoreModal row={scoreRow} schemas={schemas} periodDays={periodDays} onClose={() => setScoreRow(null)} base={base} />}
         </AppLayout>
     );
 }
@@ -889,7 +981,7 @@ function Th({ k, label, right, s, on, help }: { k: SortKey; label: string; right
     );
 }
 
-function ScoreModal({ row, schemas, periodDays, onClose }: { row: AugRow; schemas: StrategySchemas; periodDays: number; onClose: () => void }) {
+function ScoreModal({ row, schemas, periodDays, onClose, base = '/explorer' }: { row: AugRow; schemas: StrategySchemas; periodDays: number; onClose: () => void; base?: string }) {
     // El desglose se pide ON-DEMAND (no viaja en el payload masivo de resultados, que
     // con muchas combinaciones reventaba la memoria del servidor).
     const [bd, setBd] = useState<ScoreBreakdown | null>(null);
@@ -897,12 +989,12 @@ function ScoreModal({ row, schemas, periodDays, onClose }: { row: AugRow; schema
     const [loading, setLoading] = useState(true);
     useEffect(() => {
         let alive = true;
-        window.axios.post('/explorer/score', { row, period_days: periodDays })
+        window.axios.post(`${base}/score`, { row, period_days: periodDays })
             .then(({ data }) => { if (alive) { setBd(data.breakdown ?? null); setVerdict(data.verdict ?? ''); } })
             .catch(() => { /* deja el desglose vacío */ })
             .finally(() => { if (alive) setLoading(false); });
         return () => { alive = false; };
-    }, [row, periodDays]);
+    }, [row, periodDays, base]);
     const color = row.priority == null ? 'text-text-secondary' : row.priority >= 65 ? 'text-profit' : row.priority >= 40 ? 'text-warning' : 'text-loss';
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>

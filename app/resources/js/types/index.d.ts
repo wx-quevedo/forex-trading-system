@@ -386,6 +386,11 @@ export interface ExploreMeta {
     atr_tp_choices: number[];
     atr_period_default: number;
     atr_period_choices?: number[];
+    // --- Cripto (bridge 8001, Fase 2b-ii): presentes solo cuando market='crypto' ---
+    market?: 'forex' | 'crypto';
+    holdout_split_default?: number;
+    holdout_top_default?: number;
+    costs_defaults?: { taker_rate: number; maker_rate: number; fee_side: string; slippage_pct: number; apply_funding: boolean };
 }
 
 export interface SavedSearch {
@@ -482,6 +487,18 @@ export interface ExploreResultRow {
     stars: number;
     verdict: 'inside' | 'edge' | 'outside';
     verdict_label: string;
+    // --- Cripto (market='crypto'): métricas NETAS + tercer tramo holdout ---
+    pf_gross?: number | null;         // PF BRUTO (profit_factor arriba es NETO en cripto)
+    costs_eaten_pct?: number | null;  // % del PnL bruto comido por fees+funding+slippage
+    pf_out?: number | null;           // PF NETO del tramo OOS (contraste con holdout)
+    pf_out_gross?: number | null;
+    short_time_pct?: number | null;   // % del tiempo-en-posición en corto (exposición a funding)
+    trades_per_year?: number;         // frecuencia REAL (la clave de la hipótesis 2b)
+    holdout_pf?: number | null;       // PF NETO en el tercer tramo intocado (solo top-N)
+    holdout_return?: number | null;
+    holdout_trades?: number | null;
+    final_verdict?: 'inside' | 'edge' | 'outside';  // veredicto OOS ponderado por holdout
+    final_verdict_label?: string;
 }
 
 // --- Score de Prioridad (mejoras post-fase) ---
@@ -530,6 +547,8 @@ export interface ExploreStatus {
     // Caché.
     cache_hits: number;
     cache_misses: number;
+    // Cripto: tercer tramo holdout del barrido (null en forex).
+    holdout?: { split: number; top: number; from: string; to: string; tested: number } | null;
     results?: ExploreResultRow[];
 }
 
