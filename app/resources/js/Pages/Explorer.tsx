@@ -309,11 +309,37 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
         setSort((p) => (p.key === key ? { key, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
 
     // Añade una combinación a Favoritos (con el contexto = backtest de referencia).
+    // Cripto: viaja también market='crypto' + la EVIDENCIA del pipeline que la fila ya
+    // trae (holdout congelado, % comido, frecuencia real…) — para que meses después se
+    // sepa POR QUÉ se confió en ella. El cross-pair no lo conoce el Explorador (es una
+    // verificación aparte); sus labels se añaden desde esos scripts/seeds.
     const addFavorite = async (r: AugRow) => {
+        const fvl = r.final_verdict_label ?? '';
+        const cryptoValidation = {
+            pipeline: 'net+oos+holdout',
+            labels: [
+                ...(fvl === 'Aguanta el holdout' ? ['holdout-aguanta'] : []),
+                ...(fvl.startsWith('Holdout plano') ? ['holdout-plano'] : []),
+                ...(fvl.startsWith('Cayó') ? ['holdout-cayo'] : []),
+            ],
+            holdout: r.holdout_pf != null ? {
+                pf: r.holdout_pf, return_pct: r.holdout_return ?? null, trades: r.holdout_trades ?? null,
+                from: status?.holdout?.from?.slice(0, 10), to: status?.holdout?.to?.slice(0, 10),
+            } : undefined,
+            trades_per_year: r.trades_per_year,
+            costs_eaten_pct: r.costs_eaten_pct ?? null,
+            short_time_pct: r.short_time_pct ?? null,
+            pf_gross: r.pf_gross ?? null,
+            pf_out: r.pf_out ?? null,
+            source: 'explorador-cripto',
+            validated_at: new Date().toISOString().slice(0, 10),
+        };
         try {
             await window.axios.post('/favorites', {
                 name: `${schemas[r.type]?.label ?? r.type} ${r.pair} ${r.timeframe}`,
                 source: 'explorer',
+                market,
+                validation: isCrypto ? cryptoValidation : undefined,
                 pair: r.pair, type: r.type, timeframe: r.timeframe, params: r.params,
                 sl_pips: r.sl_pips, tp_pips: r.tp_pips, risk_percent: r.risk_percent, capital,
                 sl_mode: r.sl_mode ?? slMode, atr_period: r.atr_period ?? atrPeriods[0] ?? 14,
@@ -802,17 +828,19 @@ export default function Explorer({ schemas, symbols, timeframes, types, meta, co
                                                 </>
                                             )}
                                             <td className="px-3 py-1.5">
-                                                {/* Favoritos/Laboratorio/Guardar son flujos FOREX (BD de estrategias);
-                                                    en cripto llegarán con la columna `market` (fase posterior). */}
-                                                {!isCrypto && (
+                                                {/* Favorito: ambos mercados (en cripto guarda market='crypto' + evidencia).
+                                                    Laboratorio/Guardar-estrategia siguen siendo flujos FOREX (bridge MT5). */}
                                                 <div className="flex items-center gap-1">
-                                                    <button type="button" onClick={() => addFavorite(r)} className={`rounded border px-1.5 py-1 text-[13px] leading-none ${favAdded.has(_row_key(r)) ? 'border-warning text-warning' : 'border-border text-text-secondary hover:text-warning'}`} title="Añadir a favoritos">
+                                                    <button type="button" onClick={() => addFavorite(r)} className={`rounded border px-1.5 py-1 text-[13px] leading-none ${favAdded.has(_row_key(r)) ? 'border-warning text-warning' : 'border-border text-text-secondary hover:text-warning'}`} title={isCrypto ? 'Añadir a favoritos cripto (guarda la evidencia del holdout)' : 'Añadir a favoritos'}>
                                                         {favAdded.has(_row_key(r)) ? '★' : '☆'}
                                                     </button>
-                                                    <button type="button" onClick={() => loadToLab(r)} className="rounded border border-border px-2 py-1 text-[11px] text-text-primary hover:bg-bg-elevated" title="Inspeccionar en el Laboratorio">Laboratorio</button>
-                                                    <button type="button" onClick={() => setSaveRow(r)} className="rounded border border-profit/50 px-2 py-1 text-[11px] text-profit hover:bg-profit/10" title="Guardar como estrategia">Guardar</button>
+                                                    {!isCrypto && (
+                                                        <>
+                                                            <button type="button" onClick={() => loadToLab(r)} className="rounded border border-border px-2 py-1 text-[11px] text-text-primary hover:bg-bg-elevated" title="Inspeccionar en el Laboratorio">Laboratorio</button>
+                                                            <button type="button" onClick={() => setSaveRow(r)} className="rounded border border-profit/50 px-2 py-1 text-[11px] text-profit hover:bg-profit/10" title="Guardar como estrategia">Guardar</button>
+                                                        </>
+                                                    )}
                                                 </div>
-                                                )}
                                             </td>
                                         </tr>
                                     );

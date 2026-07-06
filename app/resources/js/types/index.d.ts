@@ -401,10 +401,30 @@ export interface SavedSearch {
     created_at: string;
 }
 
+// Evidencia del pipeline de verificación CRIPTO (net → OOS → holdout → cross-pair):
+// por qué se confió en el favorito y cuánto. Todos los campos opcionales — se guarda
+// lo que el pipeline haya producido para esa candidata.
+export interface FavoriteValidation {
+    pipeline?: string;                 // p.ej. 'net+oos+holdout+crosspair'
+    labels?: string[];                 // 'viaja-eth' | 'solo-btc' | 'funding-dependiente' | 'holdout-aguanta' | 'holdout-plano' | 'holdout-cayo'
+    holdout?: { pf: number | null; return_pct?: number | null; trades?: number | null; from?: string; to?: string };
+    no_funding_pf?: number | null;     // PF con funding=0 (fees+slippage puestos): edge sin subsidio
+    cross?: Record<string, { pf: number | null; pf_no_funding?: number | null; verdict: string }>;
+    trades_per_year?: number;
+    costs_eaten_pct?: number | null;
+    short_time_pct?: number | null;
+    pf_gross?: number | null;
+    pf_out?: number | null;
+    source?: string;                   // 'explorador-cripto' | 'verificacion-2b-i' | ...
+    validated_at?: string;
+    notes?: string;
+}
+
 export interface Favorite {
     id: number;
     name: string;
     source: string;
+    market?: 'forex' | 'crypto';       // default forex (columna con default: los viejos no cambian)
     pair: string;
     type: string;
     timeframe: string;
@@ -420,6 +440,7 @@ export interface Favorite {
     backtest_metrics: BacktestMetrics | null;
     regime?: RegimeLabel | null;
     regime_confidence?: number | null;
+    validation?: FavoriteValidation | null;  // evidencia del pipeline cripto
     created_at: string;
 }
 

@@ -29,6 +29,10 @@ class FavoriteController extends Controller
         $data = $request->validate([
             'name' => ['required', 'string', 'max:160'],
             'source' => ['nullable', Rule::in(['explorer', 'lab'])],
+            // Cripto (Fase 2b-iv): default 'forex' => los llamadores existentes no cambian.
+            'market' => ['nullable', Rule::in(['forex', 'crypto'])],
+            // Evidencia del pipeline de verificación cripto (labels, holdout, cross-pair).
+            'validation' => ['nullable', 'array'],
             'pair' => ['required', 'string', 'max:20'],
             'type' => ['required', Rule::in(StrategyRequest::TYPES)],
             'timeframe' => ['required', Rule::in(StrategyRequest::TIMEFRAMES)],
@@ -49,6 +53,8 @@ class FavoriteController extends Controller
         $fav = Favorite::create([
             'name' => $data['name'],
             'source' => $data['source'] ?? 'explorer',
+            'market' => $data['market'] ?? 'forex',
+            'validation' => $data['validation'] ?? null,
             'pair' => strtoupper($data['pair']),
             'type' => $data['type'],
             'timeframe' => $data['timeframe'],
