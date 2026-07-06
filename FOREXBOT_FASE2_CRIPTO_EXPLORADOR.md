@@ -1,7 +1,7 @@
 # ForexBot — Subproyecto CRIPTO · Fase 2: modelo de costos + Explorador net/OOS/holdout
 
 **Fecha:** 2026-07-05 · **Continúa:** `FOREXBOT_FASE0_CRIPTO_DIAGNOSTICO.md` (arquitectura y contrato BrokerClient) y la Fase 1 (bridge `D:\cbot` :8001, BybitClient datos públicos, core forkeado byte-idéntico).
-**Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web · **2b-iii cross-pair ETHUSDT** · **2b-v multi-timeframe**). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
+**Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web · **2b-iii cross-pair ETHUSDT** · **2b-v multi-timeframe** · **2b-vi doble cross-pair SOL + combined**). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
 
 ---
 
@@ -135,7 +135,37 @@ Mismo protocolo E2E (472 configs, net + 3 tramos) por timeframe. Hipótesis del 
 - Mapa de fertilidad BTC: **D1 > H4 ≫ H1** (M5/M15 ni se intentan: el peaje solo puede ser peor).
   En cripto, **el timeframe es una decisión de costos antes que de señal**.
 
-## 6. Siguiente paso (pendiente)
+## 6. Doble cross-pair (2b-vi) — COMPLETO. Ichimoku es ESTRUCTURA; combined viaja fino
+
+`cbot: scripts/verify_crosspair.py (genérico) + docs/FASE2B_CROSSPAIR2_SOL_COMBINED.md`
+(commit `d9945e4`). Configs CONGELADAS, criterio VIAJA = PF target >1 con y sin funding.
+
+**SOLUSDT H4 — ichimoku 12/52/104 (el tercer par): 3/3 VIAJAN, y más fuerte que en ETH.**
+Datos verificados: H4 completo desde 2022-01; funding 5.299 eventos con régimen DISTINTO
+(rate medio −0.0031 %, 69.5 % positivos → los cortos muchas veces pagan).
+
+| Variante | PF hold BTC | **PF SOL** | SOL sin funding | % comido |
+|---|--:|--:|--:|--:|
+| sin SL | 1.492 | **1.903** | **2.011** | 10.4 |
+| ATR3/3 | 1.670 | **1.435** | 1.450 | 12.8 |
+| ATR3/4 | 1.414 | **1.401** | 1.423 | 13.1 |
+
+En SOL el funding le jugó EN CONTRA (~55-66 % corto con rate medio negativo) y aun así 1.903.
+**VEREDICTO: ESTRUCTURA FIRME** — positiva en BTC (holdout), ETH y SOL, bajo tres regímenes de
+funding, sin subsidio. Evidencia de los 3 favoritos ichimoku actualizada (label `viaja-sol` +
+clave SOLUSDT en el cross).
+
+**ETHUSDT D1 — combined EMA+RSI (OR), los 6 finales de 2b-v: 6/6 pasan, con margen FINO**
+(PF 1.004–1.099 con funding, 1.029–1.140 sin él; 46-95 % comido; la mejor es justo la #1 del
+holdout, EMA100 ATR2/4 → 1.099/1.140). **VEREDICTO: viaja con margen fino** — signo consistente
+(no par-específico como las RSI, que daban 0.60-0.91) pero la magnitud es de BTC-D1. No
+descartada, no consagrada: si entra a Favoritos, con su evidencia completa y sin reclamar
+estructura al nivel de ichimoku.
+
+Patrón general del subproyecto: **la magnitud casi nunca viaja; el SIGNO sí o no — esa es la
+frontera entre estructura y ajuste al carácter de un par.**
+
+## 7. Siguiente paso (pendiente)
 
 1. **Favoritos cripto** (columna `market` en `favorites`/`explore_searches`): entra validada
    cross-pair SOLO ichimoku 12/52/104; las RSI, si entran, etiquetadas "solo BTC".
