@@ -1,7 +1,7 @@
 # ForexBot — Subproyecto CRIPTO · Fase 2: modelo de costos + Explorador net/OOS/holdout
 
 **Fecha:** 2026-07-05 · **Continúa:** `FOREXBOT_FASE0_CRIPTO_DIAGNOSTICO.md` (arquitectura y contrato BrokerClient) y la Fase 1 (bridge `D:\cbot` :8001, BybitClient datos públicos, core forkeado byte-idéntico).
-**Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web · **2b-iii cross-pair ETHUSDT**). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
+**Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web · **2b-iii cross-pair ETHUSDT** · **2b-v multi-timeframe**). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
 
 ---
 
@@ -112,7 +112,30 @@ a rotación baja** — único superviviente de la cadena OOS → holdout virgen 
 cross-pair. El activo transferible del subproyecto es el **pipeline de verificación**, no una
 familia de estrategias.
 
-## 5. Siguiente paso (pendiente)
+## 5. Multi-timeframe BTCUSDT (2b-v) — COMPLETO. El peaje manda
+
+`cbot: docs/FASE2B_MULTITF_BTC.md + scripts/multitf_btc_summary.json` (commit `6103719`).
+Mismo protocolo E2E (472 configs, net + 3 tramos) por timeframe. Hipótesis del mecanismo
+(costo por trade ~constante → bajar de TF multiplica el peaje relativo) **CONFIRMADA**:
+
+| TF | inside OOS → FINAL | Supervivencia holdout | Mejor PF holdout | Mediana % comido (pool) |
+|---|---|---|--:|--:|
+| **D1** | 7 → **6** | **86 %** | **1.870** | **22.5 %** |
+| H4 | 32 → 6 | 19 % | 1.670 | 59.0 % |
+| **H1** | **0 → 0** | — | — | **715.8 %** |
+
+- **H1 = cementerio perfecto (472/472 outside)**: ni una candidata; incluso ichimoku 12/52/104
+  queda 0.909 con 177 % comido a 110 trd/año. Las fees ejecutan todo, como predice el mecanismo.
+- **D1 = el TF más fértil del proyecto**: menos candidatas pero mucho más sólidas (86 % sobrevive
+  el holdout), y el mejor PF holdout hasta hoy: **combined EMA100+RSI (OR), ATR 2/4 → 1.870
+  (+4.48 %)**. Los 6 finales D1 son todos de la familia `combined` — que en H4 nunca llegó a
+  finales. Cautela: combined-D1 tiene estatus de UN par (como las RSI antes del cross-pair).
+- H1 verificado contra la guardia anti-truncado: 39.505 velas < tope 60k → rango completo, sin
+  ajuste. `SWEEP_TIMEFRAMES` cripto gana el chip **D1** en /crypto/explorer.
+- Mapa de fertilidad BTC: **D1 > H4 ≫ H1** (M5/M15 ni se intentan: el peaje solo puede ser peor).
+  En cripto, **el timeframe es una decisión de costos antes que de señal**.
+
+## 6. Siguiente paso (pendiente)
 
 1. **Favoritos cripto** (columna `market` en `favorites`/`explore_searches`): entra validada
    cross-pair SOLO ichimoku 12/52/104; las RSI, si entran, etiquetadas "solo BTC".
