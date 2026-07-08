@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BacktestController;
 use App\Http\Controllers\BotController;
 use App\Http\Controllers\BotHistoricoController;
+use App\Http\Controllers\CryptoBotHistoricoController;
 use App\Http\Controllers\CryptoExplorerController;
 use App\Http\Controllers\FavoriteController;
 use App\Http\Controllers\DashboardController;
@@ -66,6 +67,15 @@ Route::middleware('auth')->group(function () {
     Route::get('/crypto/explorer/results', [CryptoExplorerController::class, 'results'])->name('crypto.explorer.results');
     Route::post('/crypto/explorer/score', [CryptoExplorerController::class, 'score'])->name('crypto.explorer.score');
     Route::post('/crypto/explorer/cancel', [CryptoExplorerController::class, 'cancel'])->name('crypto.explorer.cancel');
+
+    // --- Bot Histórico CRIPTO (Fase 2b-vii): misma página, bridge Bybit :8001, NETO ---
+    // Simulación de seguimiento (walk-forward continuo) de favoritos market='crypto'.
+    // Los 4 proxies que usa la vista van al bridge cripto; el /bot-historico forex no cambia.
+    Route::get('/crypto/bot-historico', [CryptoBotHistoricoController::class, 'show'])->name('crypto.bot-historico');
+    Route::post('/crypto/bot-historico/ephemeral', [CryptoBotHistoricoController::class, 'ephemeral'])->name('crypto.bot-historico.ephemeral');
+    Route::post('/crypto/bot-historico/correlation', [CryptoBotHistoricoController::class, 'correlation'])->name('crypto.bot-historico.correlation');
+    Route::get('/crypto/bot-historico/regime/{symbol}', [CryptoBotHistoricoController::class, 'regime'])->name('crypto.bot-historico.regime');
+    Route::get('/crypto/bot-historico/candles/{symbol}', [CryptoBotHistoricoController::class, 'candles'])->name('crypto.bot-historico.candles');
 
     // --- Favoritos + Bot Histórico (Fase 9) ---
     Route::get('/favorites', [FavoriteController::class, 'index'])->name('favorites');

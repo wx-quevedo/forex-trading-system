@@ -17,6 +17,27 @@ const REGIME_WF_HELP = 'Régimen del periodo de BACKTEST (snapshot del favorito)
 interface Props {
     favorites: Favorite[];
     defaultOperation: { date_from: string; date_to: string };
+    // 'crypto' = Bot Histórico CRIPTO (/crypto/bot-historico, bridge Bybit 8001, métricas
+    // NETAS, referencia = holdout del pipeline). Default 'forex': la página forex renderiza
+    // EXACTAMENTE igual que antes (ni recibe el prop).
+    market?: 'forex' | 'crypto';
+}
+
+// Referencia del walk-forward. En cripto la promesa más honesta es el HOLDOUT intocado
+// del pipeline (validation.holdout: nadie lo vio al seleccionar); si el favorito no lo
+// trae, cae al backtest full-range. En forex: siempre el backtest de referencia (igual
+// que siempre). `label` viaja a la UI: cada columna DECLARA contra qué compara.
+function refOf(f: Favorite, isCrypto: boolean): { ret: number | null; days: number; label: string; kind: 'holdout' | 'backtest' } {
+    const h = f.validation?.holdout;
+    if (isCrypto && h?.return_pct != null && h.from && h.to) {
+        return { ret: Number(h.return_pct), days: days(h.from, h.to), label: `ref: holdout ${h.from} → ${h.to} (intocado)`, kind: 'holdout' };
+    }
+    return {
+        ret: f.backtest_metrics ? Number(f.backtest_metrics.return_pct) : null,
+        days: days(f.backtest_from, f.backtest_to),
+        label: `ref: backtest full-range ${f.backtest_from ?? '—'} → ${f.backtest_to ?? '—'}`,
+        kind: 'backtest',
+    };
 }
 
 interface SimResult {
@@ -77,7 +98,16 @@ function alignedReturns(curves: EquityPoint[][], initials: number[]): number[][]
     return equities.map((eq) => eq.slice(1).map((v, k) => (eq[k] ? (v - eq[k]) / eq[k] : 0)));
 }
 
-export default function BotHistorico({ favorites, defaultOperation }: Props) {
+export default function BotHistorico({ favorites, defaultOperation, market = 'forex' }: Props) {
+    const isCrypto = market === 'crypto';
+    // Endpoints por mercado: la página cripto habla con /crypto/bot-historico/* (proxies
+    // al bridge Bybit 8001, métricas NETAS); la forex sigue con sus URLs de siempre.
+    const api = {
+        ephemeral: isCrypto ? '/crypto/bot-historico/ephemeral' : '/backtests/ephemeral',
+        correlation: isCrypto ? '/crypto/bot-historico/correlation' : '/api/portfolio/correlation',
+        regime: (p: string) => (isCrypto ? `/crypto/bot-historico/regime/${encodeURIComponent(p)}` : `/api/market/regime/${encodeURIComponent(p)}`),
+        candles: (p: string) => (isCrypto ? `/crypto/bot-historico/candles/${encodeURIComponent(p)}` : `/api/market/candles/${encodeURIComponent(p)}`),
+    };
     const [selected, setSelected] = useState<Set<number>>(new Set());
     const [op, setOp] = useState(defaultOperation);
     const [running, setRunning] = useState(false);
@@ -97,7 +127,7 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
         const out: Record<number, SimResult> = {};
         for (const f of selectedFavs) {
             try {
-                const { data } = await window.axios.post('/backtests/ephemeral', {
+                const { data } = await window.axios.post(api.ephemeral, {
                     strategy_type: f.type, pair: f.pair, timeframe: f.timeframe,
                     date_from: op.date_from, date_to: op.date_to,
                     indicators: f.params,
@@ -148,15 +178,27 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
         const series = alignedReturns(sims.map((f) => results[f.id].equity), sims.map((f) => f.capital));
         const labels = sims.map((f) => `${f.pair}·${f.timeframe}·${f.type}`);
         let alive = true;
-        window.axios.post('/api/portfolio/correlation', { labels, series })
+        window.axios.post(api.correlation, { labels, series })
             .then(({ data }) => { if (alive) setCorr({ labels: data?.data?.labels ?? labels, matrix: data?.data?.matrix ?? [] }); })
             .catch(() => { if (alive) setCorr(null); });
         return () => { alive = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [results, selected, favorites]);
 
     return (
-        <AppLayout title="Bot Histórico (walk-forward)" wide>
-            <Head title="Bot Histórico" />
+        <AppLayout title={isCrypto ? 'Bot Histórico CRIPTO — seguimiento (Bybit)' : 'Bot Histórico (walk-forward)'} wide>
+            <Head title={isCrypto ? 'Bot Histórico CRIPTO' : 'Bot Histórico'} />
+
+            {/* Cripto: qué es (y qué NO es) esta vista. */}
+            {isCrypto && (
+                <div className="mb-4 rounded-lg border border-accent/40 bg-accent/5 px-4 py-3 text-xs text-text-secondary">
+                    <span className="mr-2 rounded bg-accent/15 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-accent">Cripto · simulación NETA · sin operación en vivo</span>
+                    Seguimiento walk-forward de los favoritos cripto — el detector de degradación continua (el rol que el veredicto
+                    SE DEGRADA cumplió en forex). Toda métrica simulada es <span className="font-semibold text-text-primary">NETA</span> (fee taker 0.055 %/lado + funding 8h real +
+                    slippage 0.02 %/lado, bridge 8001). El cumplimiento compara contra el <span className="font-semibold text-text-primary">HOLDOUT intocado</span> del pipeline de cada
+                    favorito; win/DD de referencia salen del backtest full-range — cada columna declara su fuente.
+                </div>
+            )}
 
             {/* Configuración */}
             <section className="mb-4 rounded-lg border border-border bg-bg-surface p-4">
@@ -166,7 +208,9 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
                 </div>
                 {favorites.length === 0 ? (
                     <p className="text-sm text-text-secondary">
-                        No hay favoritos. Marca estrategias con ☆ en el <Link href="/explorer" className="text-accent hover:underline">Explorador</Link> o el <Link href="/laboratory" className="text-accent hover:underline">Laboratorio</Link>.
+                        {isCrypto
+                            ? <>No hay favoritos cripto. Márcalos con ☆ en el <Link href="/crypto/explorer" className="text-accent hover:underline">Explorador CRIPTO</Link>.</>
+                            : <>No hay favoritos. Marca estrategias con ☆ en el <Link href="/explorer" className="text-accent hover:underline">Explorador</Link> o el <Link href="/laboratory" className="text-accent hover:underline">Laboratorio</Link>.</>}
                     </p>
                 ) : (
                     <>
@@ -227,11 +271,23 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
                                 <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-text-secondary">
                                     <th className="px-2 py-1.5">Estrategia</th>
                                     <th className="px-2 py-1.5 text-right">Ret. oper.</th>
-                                    <th className="px-2 py-1.5 text-right">Ret. backtest</th>
-                                    <th className="px-2 py-1.5 text-right">Anualiz. op/bt</th>
+                                    <th className="px-2 py-1.5 text-right">
+                                        <span className="inline-flex items-center gap-1">{isCrypto ? 'Ret. ref (holdout)' : 'Ret. backtest'}
+                                            {isCrypto && <InfoTooltip text="Referencia del cumplimiento en cripto: el retorno del HOLDOUT intocado del pipeline (validation del favorito) — la promesa más honesta que tenemos. Si un favorito no trae holdout, cae al backtest full-range (el tooltip de su celda lo dice)." />}
+                                        </span>
+                                    </th>
+                                    <th className="px-2 py-1.5 text-right">{isCrypto ? 'Anualiz. op/ref' : 'Anualiz. op/bt'}</th>
                                     <th className="px-2 py-1.5 text-right">Cumplim.</th>
-                                    <th className="px-2 py-1.5 text-right">Win op/bt</th>
-                                    <th className="px-2 py-1.5 text-right">DD op/bt</th>
+                                    <th className="px-2 py-1.5 text-right">
+                                        <span className="inline-flex items-center gap-1">{isCrypto ? 'Win op/full' : 'Win op/bt'}
+                                            {isCrypto && <InfoTooltip text="El win rate de referencia sale del BACKTEST FULL-RANGE NETO (el holdout no lo guarda). Referencia distinta a la del cumplimiento — por eso la etiqueta." />}
+                                        </span>
+                                    </th>
+                                    <th className="px-2 py-1.5 text-right">
+                                        <span className="inline-flex items-center gap-1">{isCrypto ? 'DD op/full' : 'DD op/bt'}
+                                            {isCrypto && <InfoTooltip text="El drawdown de referencia sale del BACKTEST FULL-RANGE NETO (el holdout no lo guarda). Referencia distinta a la del cumplimiento — por eso la etiqueta." />}
+                                        </span>
+                                    </th>
                                     <th className="px-2 py-1.5">Veredicto</th>
                                 </tr>
                             </thead>
@@ -239,20 +295,22 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
                                 {simulated.map((f) => {
                                     const A = results[f.id].metrics!;
                                     const B = f.backtest_metrics;
-                                    const bDays = days(f.backtest_from, f.backtest_to);
+                                    // Cripto: el cumplimiento compara contra el HOLDOUT del pipeline
+                                    // (ref.label lo declara en el tooltip de la celda). Forex: backtest.
+                                    const ref = refOf(f, isCrypto);
                                     const annA = annualize(A.return_pct, opDays);
-                                    const annB = B ? annualize(Number(B.return_pct), bDays) : 0;
+                                    const annB = ref.ret != null ? annualize(ref.ret, ref.days) : 0;
                                     const v = verdictOf(annA, annB, !!A.blown);
                                     const ratio = annB > 0 ? annA / annB : null;
                                     return (
                                         <tr key={f.id} className="border-b border-border/40 last:border-0">
                                             <td className="px-2 py-1.5 font-mono text-xs">{f.pair}·{f.timeframe}·{f.type}</td>
                                             <td className={`px-2 py-1.5 text-right font-mono text-xs ${A.return_pct >= 0 ? 'text-profit' : 'text-loss'}`}>{A.return_pct}%</td>
-                                            <td className="px-2 py-1.5 text-right font-mono text-xs text-text-secondary">{B ? `${B.return_pct}%` : '—'}</td>
-                                            <td className="px-2 py-1.5 text-right font-mono text-xs">{annA.toFixed(1)}/{annB.toFixed(1)}%</td>
+                                            <td className="px-2 py-1.5 text-right font-mono text-xs text-text-secondary" title={ref.label}>{ref.ret != null ? `${ref.ret}%` : '—'}{isCrypto && ref.kind === 'backtest' && ref.ret != null ? ' (full)' : ''}</td>
+                                            <td className="px-2 py-1.5 text-right font-mono text-xs" title={ref.label}>{annA.toFixed(1)}/{annB.toFixed(1)}%</td>
                                             <td className="px-2 py-1.5 text-right font-mono text-xs">{ratio != null ? `${Math.round(ratio * 100)}%` : '—'}</td>
-                                            <td className="px-2 py-1.5 text-right font-mono text-xs">{(A.win_rate * 100).toFixed(0)}/{B ? (Number(B.win_rate) * 100).toFixed(0) : '—'}%</td>
-                                            <td className="px-2 py-1.5 text-right font-mono text-xs text-loss">{A.max_drawdown_pct}/{B ? B.max_drawdown_pct : '—'}%</td>
+                                            <td className="px-2 py-1.5 text-right font-mono text-xs" title={isCrypto ? 'ref: backtest full-range (neto)' : undefined}>{(A.win_rate * 100).toFixed(0)}/{B ? (Number(B.win_rate) * 100).toFixed(0) : '—'}%</td>
+                                            <td className="px-2 py-1.5 text-right font-mono text-xs text-loss" title={isCrypto ? 'ref: backtest full-range (neto)' : undefined}>{A.max_drawdown_pct}/{B ? B.max_drawdown_pct : '—'}%</td>
                                             <td className="px-2 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${VERDICT[v].cls}`}>{VERDICT[v].label}</span></td>
                                         </tr>
                                     );
@@ -281,7 +339,7 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
                 {selectedFavs.map((f) => {
                     const res = results[f.id];
                     if (!res) return null;
-                    return <StrategyCard key={f.id} fav={f} res={res} opDays={opDays} op={op} />;
+                    return <StrategyCard key={f.id} fav={f} res={res} opDays={opDays} op={op} isCrypto={isCrypto} api={api} />;
                 })}
             </div>
 
@@ -290,27 +348,33 @@ export default function BotHistorico({ favorites, defaultOperation }: Props) {
     );
 }
 
-function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult; opDays: number; op: { date_from: string; date_to: string } }) {
+function StrategyCard({ fav, res, opDays, op, isCrypto, api }: { fav: Favorite; res: SimResult; opDays: number; op: { date_from: string; date_to: string }; isCrypto: boolean; api: { regime: (p: string) => string; candles: (p: string) => string } }) {
     const [showTrades, setShowTrades] = useState(false);
     // Régimen del periodo de OPERACIÓN (el del backtest viene en el favorito).
     const [opRegime, setOpRegime] = useState<RegimeLabel | null | undefined>(undefined);
     const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
     useEffect(() => {
         let alive = true;
-        window.axios.get(`/api/market/regime/${encodeURIComponent(fav.pair)}`, { params: { timeframe: fav.timeframe, from: op.date_from, to: op.date_to } })
+        window.axios.get(api.regime(fav.pair), { params: { timeframe: fav.timeframe, from: op.date_from, to: op.date_to } })
             .then(({ data }) => { if (alive) setOpRegime(data?.data?.regime ?? null); })
             .catch(() => { if (alive) setOpRegime(null); });
-        window.axios.get('/api/calendar/events', { params: { symbol: fav.pair, from: op.date_from, to: op.date_to, impact: 'high' } })
-            .then(({ data }) => { if (alive) setCalEvents(data?.data?.events ?? []); })
-            .catch(() => { if (alive) setCalEvents([]); });
+        // Calendario macro: es del bridge FOREX (noticias forex/índices) — en cripto se omite.
+        if (!isCrypto) {
+            window.axios.get('/api/calendar/events', { params: { symbol: fav.pair, from: op.date_from, to: op.date_to, impact: 'high' } })
+                .then(({ data }) => { if (alive) setCalEvents(data?.data?.events ?? []); })
+                .catch(() => { if (alive) setCalEvents([]); });
+        }
         return () => { alive = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fav.pair, fav.timeframe, op.date_from, op.date_to]);
     if (res.error) {
         return <div className="rounded-lg border border-loss/40 bg-bg-surface p-4 text-sm text-loss">{fav.pair}·{fav.timeframe}: {res.error}</div>;
     }
     const A = res.metrics!;
     const B = fav.backtest_metrics;
-    const bDays = days(fav.backtest_from, fav.backtest_to);
+    // Cumplimiento: en cripto contra el HOLDOUT intocado (ref.label lo declara);
+    // el resto de métricas de referencia siguen siendo del backtest full-range.
+    const ref = refOf(fav, isCrypto);
     // Expectativa en R desde win% y R/R (TP/SL) del favorito; comparable A vs B.
     const expR = (win: number | null | undefined) =>
         win != null && fav.sl_pips ? win * ((fav.tp_pips ?? 0) / fav.sl_pips) - (1 - win) : null;
@@ -324,7 +388,7 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
     const worst = res.trades.length ? res.trades.reduce((a, b) => (b.pnl < a.pnl ? b : a)) : null;
     const worstEvent = worst ? nearEvent(worst) : null;
     const annA = annualize(A.return_pct, opDays);
-    const annB = B ? annualize(Number(B.return_pct), bDays) : 0;
+    const annB = ref.ret != null ? annualize(ref.ret, ref.days) : 0;
     const v = verdictOf(annA, annB, !!A.blown);
     const ratio = annB > 0 ? annA / annB : null;
 
@@ -337,7 +401,7 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
                         {paramsLabel(fav.params)} · SL{fav.sl_pips ?? '—'}/TP{fav.tp_pips ?? '—'} · {fav.risk_percent ?? '—'}% · {fmtMoney(fav.capital)}
                     </div>
                 </div>
-                <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold ${VERDICT[v].cls}`} title={ratio != null ? `Logró ${Math.round(ratio * 100)}% del retorno anualizado del backtest` : 'Backtest no rentable: sin referencia'}>
+                <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold ${VERDICT[v].cls}`} title={ratio != null ? `Logró ${Math.round(ratio * 100)}% del retorno anualizado (${ref.label})` : `Referencia no rentable: sin veredicto (${ref.label})`}>
                     {VERDICT[v].label}
                 </span>
             </div>
@@ -376,24 +440,28 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
                 <thead>
                     <tr className="text-left text-[10px] uppercase tracking-wide text-text-secondary">
                         <th className="py-1 font-medium">Métrica</th>
-                        <th className="py-1 text-right font-medium">Backtest</th>
+                        <th className="py-1 text-right font-medium">
+                            <span className="inline-flex items-center gap-1">{isCrypto ? 'Referencia' : 'Backtest'}
+                                {isCrypto && <InfoTooltip text="Referencia MIXTA declarada por fila: el retorno (y su anualizado) compara contra el HOLDOUT intocado del pipeline — filas marcadas (hold); el resto de métricas contra el backtest full-range NETO — filas (full). El tooltip de cada celda trae la ventana exacta." />}
+                            </span>
+                        </th>
                         <th className="py-1 text-right font-medium">Operación</th>
                         <th className="py-1 text-right font-medium">Δ</th>
                     </tr>
                 </thead>
                 <tbody className="font-mono text-xs">
-                    <Row label="Retorno %" b={B ? `${B.return_pct}%` : '—'} a={`${A.return_pct}%`} d={B ? `${(A.return_pct - Number(B.return_pct)).toFixed(1)}` : '—'} good={A.return_pct >= 0} />
-                    <Row label="Retorno anualizado %" b={B ? `${annB.toFixed(1)}%` : '—'} a={`${annA.toFixed(1)}%`} d={ratio != null ? `${Math.round(ratio * 100)}% cumplido` : '—'} good={annA >= 0} />
-                    <Row label="Win rate" b={B ? `${(Number(B.win_rate) * 100).toFixed(0)}%` : '—'} a={`${(A.win_rate * 100).toFixed(0)}%`} d={B ? `${((A.win_rate - Number(B.win_rate)) * 100).toFixed(0)}pp` : '—'} good />
-                    <Row label="Profit factor" b={B && B.profit_factor != null ? fmtNumber(Number(B.profit_factor)) : '—'} a={A.profit_factor != null ? fmtNumber(A.profit_factor) : '—'} d="—" good />
-                    <Row label="Max drawdown %" b={B ? `${B.max_drawdown_pct}%` : '—'} a={`${A.max_drawdown_pct}%`} d={B ? `${(A.max_drawdown_pct - Number(B.max_drawdown_pct)).toFixed(1)}` : '—'} good={false} />
-                    <Row label="Sharpe" b={fmtN(B?.sharpe)} a={fmtN(A.sharpe)} d="—" good={A.sharpe >= 0} />
-                    <Row label="Sortino" b={fmtN(B?.sortino)} a={fmtN(A.sortino)} d="—" good={A.sortino >= 0} />
-                    <Row label="Calmar" b={fmtN(B?.calmar)} a={fmtN(A.calmar)} d="—" good={(A.calmar ?? 0) >= 0} />
-                    <Row label="Expectativa (R)" b={fmtR(expR(B ? Number(B.win_rate) : null))} a={fmtR(expR(A.win_rate))} d="—" good={(expR(A.win_rate) ?? 0) >= 0} />
-                    <Row label="PnL neto" b={B ? fmtMoney(Number(B.net_pnl)) : '—'} a={fmtMoney(A.net_pnl)} d="" good={A.net_pnl >= 0} />
-                    <Row label="Capital final" b={B ? fmtMoney(Number(B.final_balance)) : '—'} a={fmtMoney(A.final_balance)} d="" good={A.final_balance >= fav.capital} />
-                    <Row label="Operaciones" b={B ? String(B.total_trades) : '—'} a={String(A.total_trades)} d="" good />
+                    <Row label="Retorno %" b={ref.ret != null ? `${ref.ret}%${isCrypto ? (ref.kind === 'holdout' ? ' (hold)' : ' (full)') : ''}` : '—'} bTitle={ref.label} a={`${A.return_pct}%`} d={ref.ret != null ? `${(A.return_pct - ref.ret).toFixed(1)}` : '—'} good={A.return_pct >= 0} />
+                    <Row label="Retorno anualizado %" b={ref.ret != null ? `${annB.toFixed(1)}%${isCrypto ? (ref.kind === 'holdout' ? ' (hold)' : ' (full)') : ''}` : '—'} bTitle={ref.label} a={`${annA.toFixed(1)}%`} d={ratio != null ? `${Math.round(ratio * 100)}% cumplido` : '—'} good={annA >= 0} />
+                    <Row label="Win rate" b={B ? `${(Number(B.win_rate) * 100).toFixed(0)}%${isCrypto ? ' (full)' : ''}` : '—'} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={`${(A.win_rate * 100).toFixed(0)}%`} d={B ? `${((A.win_rate - Number(B.win_rate)) * 100).toFixed(0)}pp` : '—'} good />
+                    <Row label="Profit factor" b={B && B.profit_factor != null ? `${fmtNumber(Number(B.profit_factor))}${isCrypto ? ' (full)' : ''}` : '—'} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={A.profit_factor != null ? fmtNumber(A.profit_factor) : '—'} d="—" good />
+                    <Row label="Max drawdown %" b={B ? `${B.max_drawdown_pct}%${isCrypto ? ' (full)' : ''}` : '—'} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={`${A.max_drawdown_pct}%`} d={B ? `${(A.max_drawdown_pct - Number(B.max_drawdown_pct)).toFixed(1)}` : '—'} good={false} />
+                    <Row label="Sharpe" b={fmtN(B?.sharpe)} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={fmtN(A.sharpe)} d="—" good={A.sharpe >= 0} />
+                    <Row label="Sortino" b={fmtN(B?.sortino)} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={fmtN(A.sortino)} d="—" good={A.sortino >= 0} />
+                    <Row label="Calmar" b={fmtN(B?.calmar)} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={fmtN(A.calmar)} d="—" good={(A.calmar ?? 0) >= 0} />
+                    <Row label="Expectativa (R)" b={fmtR(expR(B ? Number(B.win_rate) : null))} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={fmtR(expR(A.win_rate))} d="—" good={(expR(A.win_rate) ?? 0) >= 0} />
+                    <Row label="PnL neto" b={B ? fmtMoney(Number(B.net_pnl)) : '—'} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={fmtMoney(A.net_pnl)} d="" good={A.net_pnl >= 0} />
+                    <Row label="Capital final" b={B ? fmtMoney(Number(B.final_balance)) : '—'} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={fmtMoney(A.final_balance)} d="" good={A.final_balance >= fav.capital} />
+                    <Row label="Operaciones" b={B ? String(B.total_trades) : '—'} bTitle={isCrypto ? 'ref: backtest full-range (neto)' : undefined} a={String(A.total_trades)} d="" good />
                 </tbody>
             </table>
             {A.blown && <div className="mt-2 rounded border border-loss/40 bg-loss/10 px-2 py-1 text-[11px] text-loss">Cuenta quebrada en el periodo de operación.</div>}
@@ -408,16 +476,16 @@ function StrategyCard({ fav, res, opDays, op }: { fav: Favorite; res: SimResult;
             <button type="button" onClick={() => setShowTrades((s) => !s)} className="mt-2 text-[11px] text-accent hover:underline">
                 {showTrades ? 'Ocultar' : 'Ver'} gráfica de trading ({A.total_trades} ops)
             </button>
-            {showTrades && <TradingChartLazy pair={fav.pair} timeframe={fav.timeframe} from={op.date_from} to={op.date_to} trades={res.trades} />}
+            {showTrades && <TradingChartLazy pair={fav.pair} timeframe={fav.timeframe} from={op.date_from} to={op.date_to} trades={res.trades} candlesUrl={api.candles} />}
         </div>
     );
 }
 
-function Row({ label, b, a, d, good }: { label: string; b: string; a: string; d: string; good: boolean }) {
+function Row({ label, b, a, d, good, bTitle }: { label: string; b: string; a: string; d: string; good: boolean; bTitle?: string }) {
     return (
         <tr className="border-t border-border/30">
             <td className="py-1 text-text-secondary">{label}</td>
-            <td className="py-1 text-right text-text-secondary">{b}</td>
+            <td className="py-1 text-right text-text-secondary" title={bTitle}>{b}</td>
             <td className={`py-1 text-right ${good ? 'text-profit' : 'text-loss'}`}>{a}</td>
             <td className="py-1 text-right text-text-secondary">{d}</td>
         </tr>
@@ -511,14 +579,15 @@ function OverlaidEquity({ favs, results, height }: { favs: Favorite[]; results: 
     );
 }
 
-function TradingChartLazy({ pair, timeframe, from, to, trades }: { pair: string; timeframe: string; from: string; to: string; trades: BacktestTrade[] }) {
+function TradingChartLazy({ pair, timeframe, from, to, trades, candlesUrl }: { pair: string; timeframe: string; from: string; to: string; trades: BacktestTrade[]; candlesUrl: (p: string) => string }) {
     const [candles, setCandles] = useState<Candle[] | null>(null);
     useEffect(() => {
         let alive = true;
-        window.axios.get(`/api/market/candles/${encodeURIComponent(pair)}`, { params: { timeframe, from, to } })
+        window.axios.get(candlesUrl(pair), { params: { timeframe, from, to } })
             .then(({ data }) => { if (alive) setCandles((data.data ?? []) as Candle[]); })
             .catch(() => { if (alive) setCandles([]); });
         return () => { alive = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pair, timeframe, from, to]);
     if (candles === null) return <p className="mt-2 text-xs text-text-secondary">Cargando velas…</p>;
     if (!candles.length) return <p className="mt-2 text-xs text-text-secondary">Sin velas para el periodo.</p>;
