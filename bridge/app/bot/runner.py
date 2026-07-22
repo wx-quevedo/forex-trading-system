@@ -168,6 +168,7 @@ class BotRunner:
     def status(self) -> dict[str, Any]:
         positions_by_magic: dict[int, list[dict[str, Any]]] = {}
         floating_by_magic: dict[int, float] = {}
+        positions_ok = True
         try:
             for run in bot_state.runs.values():
                 magic = run["magic"]
@@ -175,8 +176,12 @@ class BotRunner:
                 positions_by_magic[magic] = pos
                 floating_by_magic[magic] = sum(float(p.get("profit", 0.0)) for p in pos)
         except Exception:  # noqa: BLE001 - status nunca debe romper
-            pass
+            # Fix Telegram #5: NO mentir con lista vacía — marcar el snapshot como
+            # "posiciones desconocidas" para que Laravel no borre su memoria de vistos
+            # (el borrado causaba el replay de "Trade abierto" viejos por Telegram).
+            positions_ok = False
         snap = bot_state.snapshot(positions_by_magic, floating_by_magic)
+        snap["positions_ok"] = positions_ok
         # Heat actual = riesgo agregado de todas las posiciones bot / equity.
         try:
             equity = self._account_balance()

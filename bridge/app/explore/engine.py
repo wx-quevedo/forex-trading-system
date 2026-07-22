@@ -57,7 +57,8 @@ ATR_TP_CHOICES = [2.0, 3.0, 4.0]
 ATR_PERIOD_CHOICES = [7, 14, 21]
 SWEEP_TIMEFRAMES = ["M5", "M15", "H1", "H4"]
 EXPLORE_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined",
-                 "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar"]
+                 "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar",
+                 "tsm", "tsm_vol", "ibs", "connors"]  # intake externas Lote 1
 MAX_CONFIGS = 200000  # máximo absoluto de seguridad (rechazo por encima)
 WARN_CONFIGS = 20000  # a partir de aquí el frontend pide confirmación (no bloquea)
 SPLIT = 0.7  # in-sample / out-of-sample

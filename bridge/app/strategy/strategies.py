@@ -301,6 +301,143 @@ class PsarStrategy(Strategy):
 
 
 # --------------------------------------------------------------------------- #
+# Intake de estrategias EXTERNAS — Lote 1 (fuente citada en cada docstring).
+# Réplicas de recetas académicas/comunitarias para pasarlas por el pipeline
+# (3 tramos, netos en cripto). 'connors' e 'ibs' (long-flat) emiten la señal
+# 'close' (salida a plano, Lote 0): el backtester la soporta; el runner en vivo
+# AÚN NO (bloqueante documentado antes de armarlas en vivo).
+# --------------------------------------------------------------------------- #
+class TsmStrategy(Strategy):
+    """Time-Series Momentum: retorno de las últimas N velas positivo → LARGO,
+    negativo → CORTO. La señal se emite en el CAMBIO DE SIGNO (el motor revierte,
+    quedando siempre-en-mercado tras el primer cruce — fiel a la receta).
+
+    Fuente: Moskowitz, Ooi & Pedersen (2012), "Time series momentum", Journal of
+    Financial Economics 104(2), 228-250. Original: lookback 12 meses en futuros;
+    aquí N velas del timeframe (D1/H4)."""
+
+    type = "tsm"
+
+    def __init__(self, lookback: int = 90):
+        self.lookback = int(lookback)
+
+    def evaluate(self, df: pd.DataFrame) -> Signal:
+        m = ind.roc(df["close"], self.lookback)
+        snap = {"tsm_return": _last(m)}
+        if len(m.dropna()) < 2:
+            return _sig("none", "Datos insuficientes para el momentum", snap, df)
+        prev, curr = m.iloc[-2], m.iloc[-1]
+        if prev <= 0 < curr:
+            return _sig("buy", f"Momentum de {self.lookback} velas cruzó a positivo", snap, df)
+        if prev >= 0 > curr:
+            return _sig("sell", f"Momentum de {self.lookback} velas cruzó a negativo", snap, df)
+        return _sig("none", "Momentum sin cambio de signo", snap, df)
+
+
+class TsmVolStrategy(Strategy):
+    """TSM gestionado por volatilidad: mismo momentum que `tsm`, pero VETA las
+    entradas/reversiones cuando la volatilidad es anómala (ATR > k × SMA(ATR, M)).
+
+    Fuente: Barroso & Santa-Clara (2015), "Momentum has its moments", JFE 116(1);
+    Moreira & Muir (2017), "Volatility-managed portfolios", JF 72(4). El original
+    ESCALA la exposición ∝1/σ²; aquí el veto es binario sobre la entrada (el motor
+    no re-dimensiona posiciones abiertas) — distorsión documentada en el intake."""
+
+    type = "tsm_vol"
+
+    def __init__(self, lookback: int = 90, atr_period: int = 14, atr_avg: int = 50, k: float = 1.5):
+        self.lookback = int(lookback)
+        self.atr_period = int(atr_period)
+        self.atr_avg = int(atr_avg)
+        self.k = float(k)
+
+    def evaluate(self, df: pd.DataFrame) -> Signal:
+        m = ind.roc(df["close"], self.lookback)
+        a = ind.atr(df, self.atr_period)
+        a_avg = ind.sma(a, self.atr_avg)
+        snap = {"tsm_return": _last(m), "atr": _last(a), "atr_avg": _last(a_avg)}
+        if len(m.dropna()) < 2 or len(a_avg.dropna()) < 1:
+            return _sig("none", "Datos insuficientes para momentum/ATR", snap, df)
+        if a.iloc[-1] > self.k * a_avg.iloc[-1]:
+            return _sig("none", f"Volatilidad anómala (ATR > {self.k:g}× promedio): veto", snap, df)
+        prev, curr = m.iloc[-2], m.iloc[-1]
+        if prev <= 0 < curr:
+            return _sig("buy", f"Momentum {self.lookback} velas positivo con volatilidad normal", snap, df)
+        if prev >= 0 > curr:
+            return _sig("sell", f"Momentum {self.lookback} velas negativo con volatilidad normal", snap, df)
+        return _sig("none", "Momentum sin cambio de signo", snap, df)
+
+
+class IbsStrategy(Strategy):
+    """Internal Bar Strength: dónde cerró la vela dentro de su rango. IBS ≤ bajo →
+    LARGO; IBS ≥ alto → CORTO (variante 'symmetric', reversión nativa del motor) o
+    SALIR a plano (variante 'longflat', fiel a la receta original long-only — emite
+    la señal 'close' del Lote 0). Receta de D1; en H4 el peaje la ejecuta (intake).
+
+    Fuente: popularizada por QuantifiedStrategies.com y Cesar Alvarez
+    (alvarezquanttrading.com); análisis formal en Pagonidis (2013), "The IBS Effect"."""
+
+    type = "ibs"
+
+    def __init__(self, low_th: float = 0.2, high_th: float = 0.8, mode: str = "symmetric"):
+        self.low_th = float(low_th)
+        self.high_th = float(high_th)
+        self.mode = str(mode)
+
+    def evaluate(self, df: pd.DataFrame) -> Signal:
+        b = ind.ibs(df)
+        snap = {"ibs": _last(b)}
+        if not len(b):
+            return _sig("none", "Sin velas", snap, df)
+        curr = b.iloc[-1]
+        if curr <= self.low_th:
+            return _sig("buy", f"IBS {curr:.2f} ≤ {self.low_th:g}: cierre pegado al mínimo", snap, df)
+        if curr >= self.high_th:
+            if self.mode == "symmetric":
+                return _sig("sell", f"IBS {curr:.2f} ≥ {self.high_th:g}: cierre pegado al máximo", snap, df)
+            return _sig("close", f"IBS {curr:.2f} ≥ {self.high_th:g}: salir a plano (long-flat)", snap, df)
+        return _sig("none", "IBS en zona neutra", snap, df)
+
+
+class ConnorsRsi2Strategy(Strategy):
+    """Connors RSI(2): reversión a la media CON filtro de tendencia. LARGO si
+    close > SMA(trend) y RSI(2) < entry; CORTO espejo si close < SMA(trend) y
+    RSI(2) > 100−entry. SALIDA propia: RSI(2) cruza exit_level (50) → señal
+    'close' (cerrar sin abrir la contraria — Lote 0; sin ella, la receta se
+    distorsiona en reversión permanente).
+
+    Fuente: Connors & Alvarez (2008), "Short Term Trading Strategies That Work",
+    cap. RSI2 (original long-only sobre índices; el lado corto es el espejo
+    estándar de la literatura)."""
+
+    type = "connors"
+
+    def __init__(self, trend_period: int = 200, rsi_period: int = 2,
+                 entry_level: float = 10, exit_level: float = 50):
+        self.trend_period = int(trend_period)
+        self.rsi_period = int(rsi_period)
+        self.entry_level = float(entry_level)
+        self.exit_level = float(exit_level)
+
+    def evaluate(self, df: pd.DataFrame) -> Signal:
+        close = df["close"]
+        trend = ind.sma(close, self.trend_period)
+        r = ind.rsi(close, self.rsi_period)
+        snap = {"rsi2": _last(r), "sma_trend": _last(trend)}
+        if len(r.dropna()) < 2 or pd.isna(trend.iloc[-1]):
+            return _sig("none", "Datos insuficientes para RSI(2)/tendencia", snap, df)
+        prev, curr = r.iloc[-2], r.iloc[-1]
+        ex = self.exit_level
+        if (prev < ex <= curr) or (prev > ex >= curr):
+            return _sig("close", f"RSI(2) cruzó {ex:g}: salida a plano", snap, df)
+        if close.iloc[-1] > trend.iloc[-1] and curr < self.entry_level:
+            return _sig("buy", f"Tendencia alcista y RSI(2) {curr:.0f} < {self.entry_level:g}", snap, df)
+        if close.iloc[-1] < trend.iloc[-1] and curr > 100 - self.entry_level:
+            return _sig("sell", f"Tendencia bajista y RSI(2) {curr:.0f} > {100 - self.entry_level:g}", snap, df)
+        return _sig("none", "Sin extremo de RSI(2) a favor de la tendencia", snap, df)
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def _last(series: pd.Series) -> float | None:
@@ -337,10 +474,19 @@ _REGISTRY: dict[str, type[Strategy]] = {
     "stochastic": StochasticStrategy,
     "cci": CciStrategy,
     "psar": PsarStrategy,
+    # Intake externas — Lote 1
+    "tsm": TsmStrategy,
+    "tsm_vol": TsmVolStrategy,
+    "ibs": IbsStrategy,
+    "connors": ConnorsRsi2Strategy,
 }
 
 _MA_OPTIONS = [{"value": "sma", "label": "SMA"}, {"value": "ema", "label": "EMA"}]
 _LOGIC_OPTIONS = [{"value": "and", "label": "AND (ambas)"}, {"value": "or", "label": "OR (cualquiera)"}]
+_IBS_MODES = [
+    {"value": "symmetric", "label": "Symmetric (reversal)"},
+    {"value": "longflat", "label": "Long-flat (faithful)"},
+]
 
 
 STRATEGY_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -444,6 +590,43 @@ STRATEGY_SCHEMAS: dict[str, dict[str, Any]] = {
             {"name": "af_max", "label": "AF Max", "type": "number", "default": 0.2, "min": 0.05, "max": 0.5, "step": 0.05},
         ],
     },
+    # --- Intake externas Lote 1 ---
+    "tsm": {
+        "label": "Time-Series Momentum",
+        "description": "Momentum de serie propia (Moskowitz 2012): retorno de N velas positivo → largo, negativo → corto. Señal en el cambio de signo (siempre-en-mercado).",
+        "fields": [
+            {"name": "lookback", "label": "Lookback", "type": "number", "default": 90, "min": 5, "max": 400, "step": 1},
+        ],
+    },
+    "tsm_vol": {
+        "label": "TSM Vol-Managed",
+        "description": "TSM con veto de volatilidad (Barroso/Santa-Clara 2015): no entra si el ATR supera k× su promedio.",
+        "fields": [
+            {"name": "lookback", "label": "Lookback", "type": "number", "default": 90, "min": 5, "max": 400, "step": 1},
+            {"name": "atr_period", "label": "ATR Period", "type": "number", "default": 14, "min": 2, "max": 100, "step": 1},
+            {"name": "atr_avg", "label": "ATR Average", "type": "number", "default": 50, "min": 5, "max": 300, "step": 1},
+            {"name": "k", "label": "Vol Veto k", "type": "number", "default": 1.5, "min": 0.5, "max": 5, "step": 0.1},
+        ],
+    },
+    "ibs": {
+        "label": "Internal Bar Strength",
+        "description": "Cierre relativo al rango de la vela (Alvarez/QuantifiedStrategies): IBS ≤ bajo → largo; ≥ alto → corto (symmetric) o salir a plano (long-flat). Receta de D1.",
+        "fields": [
+            {"name": "low_th", "label": "Low Threshold", "type": "number", "default": 0.2, "min": 0.05, "max": 0.45, "step": 0.05},
+            {"name": "high_th", "label": "High Threshold", "type": "number", "default": 0.8, "min": 0.55, "max": 0.95, "step": 0.05},
+            {"name": "mode", "label": "Mode", "type": "select", "default": "symmetric", "options": _IBS_MODES},
+        ],
+    },
+    "connors": {
+        "label": "Connors RSI(2)",
+        "description": "Reversión con filtro de tendencia (Connors 2008): RSI(2) extremo a favor de la SMA de tendencia entra; sale a plano cuando RSI(2) cruza el nivel de salida.",
+        "fields": [
+            {"name": "trend_period", "label": "Trend SMA", "type": "number", "default": 200, "min": 20, "max": 400, "step": 1},
+            {"name": "rsi_period", "label": "RSI Period", "type": "number", "default": 2, "min": 2, "max": 10, "step": 1},
+            {"name": "entry_level", "label": "Entry Level", "type": "number", "default": 10, "min": 2, "max": 30, "step": 1},
+            {"name": "exit_level", "label": "Exit Level", "type": "number", "default": 50, "min": 30, "max": 70, "step": 1},
+        ],
+    },
 }
 
 
@@ -456,6 +639,9 @@ def signal_series(strategy: Strategy, df: pd.DataFrame) -> pd.Series:
     close = df["close"]
     buy = pd.Series(False, index=df.index)
     sell = pd.Series(False, index=df.index)
+    # 'flat' → señal 'close' (salida a plano, Lote 0). Solo la usan las estrategias
+    # con salida-por-condición; para el resto queda toda en False (cero cambio).
+    flat = pd.Series(False, index=df.index)
     t = strategy.type
 
     if t == "ma_cross":
@@ -520,8 +706,38 @@ def signal_series(strategy: Strategy, df: pd.DataFrame) -> pd.Series:
         _, direction = ind.parabolic_sar(df, strategy.af_step, strategy.af_max)  # type: ignore[attr-defined]
         buy = (direction.shift(1) == -1) & (direction == 1)
         sell = (direction.shift(1) == 1) & (direction == -1)
+    # --- Intake externas Lote 1 (mismas fórmulas que evaluate(); fuentes en las clases) ---
+    elif t == "tsm":
+        m = ind.roc(close, strategy.lookback)  # type: ignore[attr-defined]
+        buy = (m.shift(1) <= 0) & (m > 0)
+        sell = (m.shift(1) >= 0) & (m < 0)
+    elif t == "tsm_vol":
+        m = ind.roc(close, strategy.lookback)  # type: ignore[attr-defined]
+        a = ind.atr(df, strategy.atr_period)  # type: ignore[attr-defined]
+        calm = a <= strategy.k * ind.sma(a, strategy.atr_avg)  # type: ignore[attr-defined]
+        buy = (m.shift(1) <= 0) & (m > 0) & calm
+        sell = (m.shift(1) >= 0) & (m < 0) & calm
+    elif t == "ibs":
+        b = ind.ibs(df)
+        buy = b <= strategy.low_th  # type: ignore[attr-defined]
+        high = b >= strategy.high_th  # type: ignore[attr-defined]
+        if strategy.mode == "symmetric":  # type: ignore[attr-defined]
+            sell = high
+        else:  # long-flat fiel a la receta: IBS alto = salir, no ponerse corto
+            flat = high
+    elif t == "connors":
+        trend = ind.sma(close, strategy.trend_period)  # type: ignore[attr-defined]
+        r = ind.rsi(close, strategy.rsi_period)  # type: ignore[attr-defined]
+        buy = (close > trend) & (r < strategy.entry_level)  # type: ignore[attr-defined]
+        sell = (close < trend) & (r > 100 - strategy.entry_level)  # type: ignore[attr-defined]
+        ex = strategy.exit_level  # type: ignore[attr-defined]
+        # Cruce de exit_level en CUALQUIER dirección: al bajar cierra cortos, al subir
+        # cierra largos (el motor cierra lo que haya abierto; en plano es no-op).
+        flat = ((r.shift(1) < ex) & (r >= ex)) | ((r.shift(1) > ex) & (r <= ex))
 
     out = pd.Series("none", index=df.index, dtype=object)
+    # Prioridad: una entrada (buy/sell) pisa a 'close' si coincidieran en la vela.
+    out[flat.fillna(False)] = "close"
     out[buy.fillna(False)] = "buy"
     out[sell.fillna(False) & ~buy.fillna(False)] = "sell"
     return out

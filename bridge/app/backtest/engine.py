@@ -211,6 +211,11 @@ def run_backtest(
                     close_position(closes[i], times[i], "signal")
                 if position is None:
                     open_position(s, i)
+            elif s == "close" and position is not None:
+                # Salida-por-condición (Lote 0, intake externas): cierra a PLANO, sin
+                # abrir la contraria. Ninguna estrategia previa emite 'close' →
+                # backward-compat exacta (verificada con tests de identidad).
+                close_position(closes[i], times[i], "signal")
 
         # 3) Equity mark-to-market.
         equity = balance

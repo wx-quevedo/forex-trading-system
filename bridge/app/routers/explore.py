@@ -39,7 +39,8 @@ from ..mt5_client import MT5Error, client
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
 KNOWN_TYPES = ["ma_cross", "rsi", "macd", "bollinger", "combined",
-               "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar"]
+               "supertrend", "ichimoku", "donchian", "stochastic", "cci", "psar",
+               "tsm", "tsm_vol", "ibs", "connors"]  # intake externas Lote 1
 
 
 class ExploreRequest(BaseModel):

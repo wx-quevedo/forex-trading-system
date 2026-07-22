@@ -8,7 +8,11 @@ from typing import Any, Literal
 
 import pandas as pd
 
-SignalType = Literal["buy", "sell", "none"]
+# 'close' (intake externas, Lote 0): cerrar la posición SIN abrir la contraria —
+# salida-por-condición de recetas como Connors RSI2 / IBS long-flat. El backtester
+# la entiende; el runner del bot en vivo AÚN NO (bloqueante documentado: extenderlo
+# antes de armar en vivo cualquier estrategia que la emita).
+SignalType = Literal["buy", "sell", "none", "close"]
 
 
 @dataclass

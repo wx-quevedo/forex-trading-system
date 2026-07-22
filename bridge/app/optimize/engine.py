@@ -97,6 +97,28 @@ def _grid(strategy_type: str, base: dict[str, Any]) -> list[dict[str, Any]]:
             for s in (0.02, 0.04)
             for mx in (0.2, 0.3)
         ]
+    # --- Intake externas Lote 1 (rangos modestos) ---
+    if t == "tsm":
+        return [{"lookback": n} for n in (30, 60, 90, 120, 180)]
+    if t == "tsm_vol":
+        return [
+            {"lookback": n, "atr_period": 14, "atr_avg": 50, "k": k}
+            for n in (60, 90, 120)
+            for k in (1.5, 2.0)
+        ]
+    if t == "ibs":
+        return [
+            {"low_th": lo, "high_th": hi, "mode": m}
+            for lo in (0.15, 0.2, 0.25)
+            for hi in (0.75, 0.8, 0.85)
+            for m in ("symmetric", "longflat")
+        ]
+    if t == "connors":
+        return [
+            {"trend_period": tp, "rsi_period": 2, "entry_level": e, "exit_level": 50}
+            for tp in (100, 200)
+            for e in (5, 10, 15)
+        ]
     return [dict(base)]
 
 

@@ -34,6 +34,22 @@ class FakeClient:
     def resolve_tradable_symbol(self, symbol):
         return symbol.upper()
 
+    # Perfil del símbolo (lo consume app/bot/order.py para preview/ejecutor fiel).
+    # Valores EURUSD-like coherentes con price(): pip 0.0001, $10/pip/lote.
+    def symbol_costs(self, symbol):
+        return {"point": 0.00001, "pip": 0.0001, "pip_value_per_lot": 10.0,
+                "spread_pips": 1.0, "commission_per_lot": 0.0,
+                "swap_long_pts": 0.0, "swap_short_pts": 0.0,
+                "volume_min": 0.01, "volume_step": 0.01, "contract_size": 100000.0}
+
+    def symbol_info(self, symbol):
+        return {"name": symbol, "point": 0.00001, "digits": 5,
+                "trade_stops_level": 0, "volume_max": 100.0, "trade_mode": 4}
+
+    def account_info(self):
+        return {"balance": 10000.0, "equity": 10000.0, "currency": "USD",
+                "margin_free": 10000.0, "login": 1}
+
     def candles(self, symbol, timeframe, count=None, **kw):
         return self._candles
 

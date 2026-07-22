@@ -247,3 +247,21 @@ def parabolic_sar(df: pd.DataFrame, af_step: float = 0.02,
         direction[i] = 1 if up else -1
 
     return pd.Series(sar, index=df.index), pd.Series(direction, index=df.index)
+
+
+def roc(close: pd.Series, period: int = 90) -> pd.Series:
+    """Rate of change (retorno simple de N velas): close/close[-N] − 1.
+
+    Base del time-series momentum (Moskowitz, Ooi & Pedersen 2012): el signo del
+    retorno propio reciente predice el retorno siguiente."""
+    return close / close.shift(period) - 1.0
+
+
+def ibs(df: pd.DataFrame) -> pd.Series:
+    """Internal Bar Strength: (close − low) / (high − low), en [0, 1].
+
+    Dónde cerró la vela dentro de su propio rango: ~0 = cierre pegado al mínimo
+    (sobreventa intradía), ~1 = pegado al máximo. 0.5 si la vela no tiene rango
+    (high == low). Reversión de corto plazo en D1 (Alvarez / QuantifiedStrategies)."""
+    rng = df["high"] - df["low"]
+    return ((df["close"] - df["low"]) / rng.where(rng > 0)).fillna(0.5)
