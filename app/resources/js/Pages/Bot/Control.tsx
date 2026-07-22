@@ -8,8 +8,9 @@ import BotDecisionPanel from '@/Components/BotDecisionPanel';
 import MarketStatus from '@/Components/bot/MarketStatus';
 import PositionsPanel from '@/Components/bot/PositionsPanel';
 import ActivityFeed, { type JournalEntry } from '@/Components/bot/ActivityFeed';
+import ClosedTradesTable from '@/Components/bot/ClosedTradesTable';
 import HealthBar, { type HealthSummary } from '@/Components/bot/HealthBar';
-import type { BotSignal, BotStatus, Candle, Favorite, Strategy } from '@/types';
+import type { BotClosedDeal, BotLifetimePnl, BotSignal, BotStatus, Candle, Favorite, Strategy } from '@/types';
 
 interface Props {
     strategies: (Pick<Strategy, 'id' | 'name' | 'pair' | 'timeframe' | 'parameters' | 'version'> & { favorite_id?: number | null })[];
@@ -58,15 +59,43 @@ export default function Control({ strategies, favorites, status: initialStatus }
             setHealth(data as HealthSummary);
         } catch { /* la ruta degrada por su cuenta; si ni responde, mantiene lo último */ }
     };
+    // --- PnL de vida + trades cerrados (fuente: MT5 por magic): ciclo de 30s ---
+    // El realizado solo cambia cuando CIERRA un trade; el flotante ya viaja en el
+    // status de 3s → el chip "PnL total" combina ambos sin llamadas extra.
+    const [lifetime, setLifetime] = useState<BotLifetimePnl | null>(null);
+    const [closedTrades, setClosedTrades] = useState<BotClosedDeal[]>([]);
+    const [closedEpoch, setClosedEpoch] = useState<string | null>(null);
+    const pollLifetime = useRef<() => void>(() => {});
+    pollLifetime.current = async () => {
+        try {
+            const { data } = await window.axios.get('/bot/lifetime-pnl');
+            if (!data.error) setLifetime(data as BotLifetimePnl);
+        } catch { /* mantiene lo último */ }
+        try {
+            const { data } = await window.axios.get('/bot/closed-trades', { params: { limit: 50 } });
+            setClosedTrades((data.trades ?? []) as BotClosedDeal[]);
+            setClosedEpoch(data.epoch ?? null);
+        } catch { /* mantiene lo último */ }
+    };
     useEffect(() => {
         poll.current(); // carga inmediata (el journal jsonl no viene en las props)
         pollHealth.current();
+        pollLifetime.current();
         const id = window.setInterval(() => poll.current(), 3000);
         const idH = window.setInterval(() => pollHealth.current(), 15000);
+        const idL = window.setInterval(() => pollLifetime.current(), 30000);
         const ch = window.Echo?.channel('bot');
         ch?.listen('.bot.updated', (e: { status: BotStatus }) => setStatus(e.status));
-        return () => { window.clearInterval(id); window.clearInterval(idH); ch?.stopListening('.bot.updated'); };
+        return () => { window.clearInterval(id); window.clearInterval(idH); window.clearInterval(idL); ch?.stopListening('.bot.updated'); };
     }, []);
+
+    // Flotante EN VIVO (del polling de 3s): las posiciones del status ya son solo del bot.
+    const floatingLive = (status.positions ?? []).reduce((a, p) => a + (p.profit ?? 0), 0);
+
+    // Pestaña activa de la fila 2 (Trades | Actividad), persistida como el resto de sub-tabs.
+    const [actTab, setActTab] = useState<'trades' | 'activity'>(
+        () => (localStorage.getItem('forexbot.bot_act_tab') as 'trades' | 'activity') ?? 'trades',
+    );
 
     // Salud degradada (algo crítico en rojo) → la barra global lo refleja como "Problema".
     const healthDegraded = !!health && (health.bridge?.ok === false || (health.mt5 != null && !health.mt5.connected) || health.db?.ok === false);
@@ -264,7 +293,7 @@ export default function Control({ strategies, favorites, status: initialStatus }
                 {error && <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-2 text-sm text-loss">{error}</div>}
 
                 {/* 1 · Barra de estado global (sticky) */}
-                <GlobalBar status={status} busy={busy} degraded={healthDegraded} onPauseAll={pauseAll} onResumeAll={resumeAll} onPanic={panic} />
+                <GlobalBar status={status} busy={busy} degraded={healthDegraded} lifetime={lifetime} floatingLive={floatingLive} onPauseAll={pauseAll} onResumeAll={resumeAll} onPanic={panic} />
 
                 {/* FILA 1 · El "ahora": sidebar (selectoras) + gráfico grande + posiciones abiertas */}
                 <div className="grid grid-cols-1 items-stretch gap-5 xl:grid-cols-[300px_1fr_320px]">
@@ -342,8 +371,20 @@ export default function Control({ strategies, favorites, status: initialStatus }
                     <PositionsPanel positions={status.positions ?? []} runs={runs} />
                 </div>
 
-                {/* FILA 2 · Actividad (journal) a ancho completo — histórico/auditoría */}
-                <ActivityFeed journal={journal} events={status.journal ?? []} strategyName={strategyName} />
+                {/* FILA 2 · Trades (cierres reales del bróker) | Actividad (journal) — ancho completo */}
+                <div>
+                    <div className="mb-2 flex gap-1.5">
+                        {(['trades', 'activity'] as const).map((t) => (
+                            <button key={t} type="button" onClick={() => { setActTab(t); localStorage.setItem('forexbot.bot_act_tab', t); }}
+                                className={`rounded-md border px-3 py-1 text-xs ${actTab === t ? 'border-accent bg-accent/15 text-text-primary' : 'border-border text-text-secondary hover:text-text-primary'}`}>
+                                {t === 'trades' ? `Trades (${closedTrades.length})` : 'Actividad'}
+                            </button>
+                        ))}
+                    </div>
+                    {actTab === 'trades'
+                        ? <ClosedTradesTable trades={closedTrades} epoch={closedEpoch} />
+                        : <ActivityFeed journal={journal} events={status.journal ?? []} strategyName={strategyName} />}
+                </div>
 
                 {/* FILA 3 · Salud del sistema (ancho completo) */}
                 <HealthBar health={health} lastSignalAt={status.signals?.[0]?.evaluated_at} loading={health === null} />

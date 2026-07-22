@@ -573,6 +573,33 @@ export interface ExploreStatus {
     results?: ExploreResultRow[];
 }
 
+// --- PnL de vida + trades cerrados del bot (fuente canónica: MT5 history_deals por magic) ---
+export interface BotLifetimePnl {
+    realized: number;       // Σ deals del bot (profit + commission + swap + fee) desde el epoch
+    floating: number;       // Σ posiciones abiertas del bot (profit + swap)
+    total: number;
+    closed_count: number;
+    open_count: number;
+    since: string | null;   // fecha del primer deal real
+    epoch: string;          // desde cuándo se agrega (config, env-overrideable)
+}
+
+export interface BotClosedDeal {
+    position_id: number;
+    magic: number;
+    strategy_id: number;    // magic − 770000
+    symbol: string;
+    direction: 'buy' | 'sell';
+    volume: number;
+    entry_price: number | null;  // null si la apertura quedó fuera del epoch
+    close_price: number;
+    open_time: number | null;    // epoch s
+    close_time: number;          // epoch s
+    pnl: number;                 // bróker-fiel: profit + comisiones ambos lados + swap + fee
+    close_reason: string | null; // enriquecido desde BD/journal si existe (si no: null, la fila se muestra igual)
+    strategy: { name: string; pair: string; type: string | null } | null;  // null = estrategia borrada de la BD
+}
+
 // --- Journal del bot (Fase 8D) ---
 export interface BotEvent {
     id: number;

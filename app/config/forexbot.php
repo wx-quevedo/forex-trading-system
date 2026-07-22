@@ -66,6 +66,19 @@ return [
     |  - grace_min: tras un reinicio, cuánto esperar a que MT5/BD sanen antes de rendirse
     |    (la conexión a MT5 del bridge es perezosa: tarda un poco en volver tras el boot).
     */
+    /*
+    |--------------------------------------------------------------------------
+    | Bot en vivo — epoch (PnL de vida / historial de cierres)
+    |--------------------------------------------------------------------------
+    | Fecha desde la que se agregan los deals de MT5 por magic del bot
+    | (770000-869999) para el PnL total de vida y la pestaña Trades. 2026-06-25 =
+    | primer deal real del bot en esta cuenta demo (e2e Fase 7). La fuente
+    | canónica es el HISTORIAL DEL BRÓKER (history_deals), no el journal ni la BD.
+    */
+    'bot' => [
+        'epoch' => env('BOT_EPOCH', '2026-06-25'),
+    ],
+
     'autoresume' => [
         'enabled' => (bool) env('AUTORESUME_ENABLED', true),
         'loop_window_min' => (int) env('AUTORESUME_LOOP_WINDOW_MIN', 10),

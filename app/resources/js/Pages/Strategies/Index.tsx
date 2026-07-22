@@ -14,6 +14,10 @@ const TYPE_LABELS: Record<string, string> = {
     stochastic: 'Stochastic Oscillator',
     cci: 'CCI',
     psar: 'Parabolic SAR',
+    tsm: 'Time-Series Momentum',
+    tsm_vol: 'TSM Vol-Managed',
+    ibs: 'Internal Bar Strength',
+    connors: 'Connors RSI(2)',
 };
 
 export default function Index({ strategies }: { strategies: Strategy[] }) {

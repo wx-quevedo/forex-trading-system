@@ -73,6 +73,141 @@ class BotController extends Controller
         }
     }
 
+    /** ¿Magic del rango del bot? (magic_for(sid) = 770000 + sid; espejo de state.py del bridge). */
+    private function isBotMagic(int $magic): bool
+    {
+        return $magic >= 770000 && $magic <= 869999;
+    }
+
+    /** Deals del bot desde el epoch (fuente CANÓNICA: history_deals de MT5 por magic). */
+    private function botDeals(): \Illuminate\Support\Collection
+    {
+        $since = \Illuminate\Support\Carbon::parse((string) config('forexbot.bot.epoch', '2026-06-25'))->toIso8601String();
+        $deals = $this->bridge->history($since, now()->toIso8601String());
+
+        return collect($deals)->filter(fn ($d) => $this->isBotMagic((int) ($d['magic'] ?? 0)))->values();
+    }
+
+    /**
+     * PnL TOTAL de vida del bot (read-only): realizado (deals del bróker por magic,
+     * con comisiones/swaps/fees — sobrevive a re-armes y huecos del journal) + flotante
+     * actual de las posiciones del bot. El journal/BD NO son fuente aquí: cubren 2 y 11
+     * de los 35 cierres reales; MT5 los cubre todos.
+     */
+    public function lifetimePnl(): JsonResponse
+    {
+        try {
+            $deals = $this->botDeals();
+            // Realizado = TODOS los deals del bot: el profit vive en los deals OUT, pero
+            // commission/fee pueden venir también en los IN según el broker → sumar todo
+            // el grupo es lo bróker-fiel (los IN traen profit 0, no doblan nada).
+            $realized = round($deals->sum(
+                fn ($d) => (float) ($d['profit'] ?? 0) + (float) ($d['commission'] ?? 0)
+                    + (float) ($d['swap'] ?? 0) + (float) ($d['fee'] ?? 0)
+            ), 2);
+            // DEAL_ENTRY: 0=IN, 1=OUT, 2=INOUT (reversal), 3=OUT_BY. Cierres = OUT | OUT_BY.
+            $closed = $deals->filter(fn ($d) => in_array((int) ($d['entry'] ?? -1), [1, 3], true))->count();
+
+            $positions = collect($this->bridge->positions())
+                ->filter(fn ($p) => $this->isBotMagic((int) ($p['magic'] ?? 0)))->values();
+            $floating = round($positions->sum(fn ($p) => (float) ($p['profit'] ?? 0) + (float) ($p['swap'] ?? 0)), 2);
+
+            $first = $deals->min('time');
+
+            return response()->json([
+                'realized' => $realized,
+                'floating' => $floating,
+                'total' => round($realized + $floating, 2),
+                'closed_count' => $closed,
+                'open_count' => $positions->count(),
+                'since' => $first ? gmdate('Y-m-d', (int) $first) : null,
+                'epoch' => (string) config('forexbot.bot.epoch', '2026-06-25'),
+            ]);
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'No se pudo calcular el PnL de vida: ' . $e->getMessage()], 502);
+        }
+    }
+
+    /**
+     * Trades CERRADOS del bot (read-only): deals del bróker agrupados por posición,
+     * más reciente arriba. Enriquecidos con el motivo de cierre desde la BD/journal
+     * cuando existe (matching por position_id) — COMPLETITUD > enriquecimiento: un
+     * deal sin motivo se muestra igual, jamás se omite.
+     */
+    public function closedTrades(Request $request): JsonResponse
+    {
+        $limit = min(200, max(1, (int) $request->integer('limit', 50)));
+        try {
+            $deals = $this->botDeals();
+        } catch (Throwable $e) {
+            return response()->json(['error' => 'No se pudo obtener el historial: ' . $e->getMessage()], 502);
+        }
+
+        $rows = collect();
+        foreach ($deals->groupBy(fn ($d) => (int) ($d['position_id'] ?? 0)) as $posId => $group) {
+            $out = $group->first(fn ($d) => in_array((int) ($d['entry'] ?? -1), [1, 3], true));
+            if (! $out) {
+                continue; // posición aún abierta (solo deal de entrada)
+            }
+            $in = $group->first(fn ($d) => (int) ($d['entry'] ?? -1) === 0);
+            $magic = (int) ($out['magic'] ?? 0);
+            $rows->push([
+                'position_id' => (int) $posId,
+                'magic' => $magic,
+                'strategy_id' => $magic - 770000,
+                'symbol' => (string) ($out['symbol'] ?? ''),
+                // Dirección de la POSICIÓN = el deal de ENTRADA (type 0=BUY/1=SELL). Sin
+                // IN dentro del epoch, se invierte el OUT (cerrar un largo ES un SELL).
+                'direction' => $in
+                    ? ((int) ($in['type'] ?? 0) === 0 ? 'buy' : 'sell')
+                    : ((int) ($out['type'] ?? 0) === 0 ? 'sell' : 'buy'),
+                'volume' => (float) ($out['volume'] ?? 0),
+                'entry_price' => $in ? (float) $in['price'] : null,
+                'close_price' => (float) ($out['price'] ?? 0),
+                'open_time' => $in ? (int) $in['time'] : null,
+                'close_time' => (int) ($out['time'] ?? 0),
+                // PnL bróker-fiel del grupo completo (profit + comisiones de ambos lados + swap + fee).
+                'pnl' => round($group->sum(
+                    fn ($d) => (float) ($d['profit'] ?? 0) + (float) ($d['commission'] ?? 0)
+                        + (float) ($d['swap'] ?? 0) + (float) ($d['fee'] ?? 0)
+                ), 2),
+            ]);
+        }
+        $rows = $rows->sortByDesc('close_time')->take($limit)->values();
+
+        // --- Enriquecimiento best-effort (su fallo degrada el motivo, nunca la fila) ---
+        $posIds = $rows->pluck('position_id');
+        $dbReasons = Trade::whereIn('ticket', $posIds)->whereNotNull('close_reason')->pluck('close_reason', 'ticket');
+        $jReasons = [];
+        try {
+            $journal = $this->bridge->botJournal(500);
+            foreach (($journal['entries'] ?? []) as $e) {
+                if (($e['kind'] ?? '') === 'close' && ! empty($e['ticket'])) {
+                    $jReasons[(int) $e['ticket']] = $e['close_reason'] ?? null;
+                }
+            }
+        } catch (Throwable) {
+            // journal no accesible: las filas salen sin ese motivo extra
+        }
+        $strategies = Strategy::whereIn('id', $rows->pluck('strategy_id')->unique())
+            ->get(['id', 'name', 'pair', 'parameters'])->keyBy('id');
+
+        $rows = $rows->map(function ($r) use ($dbReasons, $jReasons, $strategies) {
+            $s = $strategies->get($r['strategy_id']);
+            $r['close_reason'] = $dbReasons[$r['position_id']] ?? $jReasons[$r['position_id']] ?? null;
+            $r['strategy'] = $s
+                ? ['name' => $s->name, 'pair' => $s->pair, 'type' => $s->parameters['type'] ?? null]
+                : null;
+            return $r;
+        });
+
+        return response()->json([
+            'trades' => $rows,
+            'count' => $rows->count(),
+            'epoch' => (string) config('forexbot.bot.epoch', '2026-06-25'),
+        ]);
+    }
+
     /** Journal PERSISTENTE del bot (aperturas/cierres; sobrevive reinicios y corte de día). */
     public function journalPersistent(Request $request): JsonResponse
     {

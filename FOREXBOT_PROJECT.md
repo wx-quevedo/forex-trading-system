@@ -477,3 +477,18 @@ No avances a Fase 2 hasta recibir confirmación.
 ---
 
 *Documento creado durante sesión de planificación · Actualizar al inicio de cada fase*
+
+---
+
+## BLOQUEANTE ABIERTO — señal 'close' y el runner en vivo (intake externas, 2026-07-08)
+
+El backtester soporta la señal **'close'** (cerrar a plano SIN abrir la contraria —
+`backtest/engine.py`, Lote 0 del intake de estrategias externas). **El `runner.py` del bot
+en vivo NO la entiende**: solo actúa sobre buy/sell.
+
+**Regla imborrable:** antes de ARMAR EN VIVO cualquier estrategia que emita 'close'
+(`connors`, `ibs` en modo long-flat, y las futuras del intake con salida-por-condición),
+extender el runner con el mismo significado que el backtest (cerrar la posición del run a
+plano). Si no, habrá divergencia backtest↔vivo: el vivo mantendría posiciones que el
+backtest ya cerró. Las estrategias sin 'close' (todas las previas + tsm/tsm_vol/ibs-symmetric)
+no están afectadas.

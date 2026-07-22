@@ -58,15 +58,20 @@ class BotService
             $runByStrategy[(int) $r['strategy_id']] = $r;
         }
 
-        $this->syncSignals($status['signals'] ?? []);
-        $this->syncOpenPositions($status['positions'] ?? [], $runByStrategy);
+        // Fix Telegram #5: el bridge (post-reinicio del finde) marca positions_ok=false
+        // cuando su bucle de posiciones falló (hipo de MT5) en vez de mentir con lista
+        // vacía. Bridges viejos no envían el campo → se asume true (compat).
+        $positionsOk = ($status['positions_ok'] ?? true) !== false;
+
+        $this->syncSignals($status['signals'] ?? [], $runByStrategy);
+        $this->syncOpenPositions($status['positions'] ?? [], $runByStrategy, $positionsOk);
         $this->syncClosedTrades($status['closed_trades'] ?? [], $runByStrategy);
         $this->updateRuns($runByStrategy);
         $this->journalHedge($status['exposure'] ?? [], $status['positions'] ?? []);
     }
 
-    /** Señales nuevas por estrategia (seq monotónico por estrategia) → signal_logs. */
-    private function syncSignals(array $signals): void
+    /** Señales nuevas por estrategia (seq monotónico POR RUN) → signal_logs. */
+    private function syncSignals(array $signals, array $runByStrategy = []): void
     {
         $bySid = [];
         foreach ($signals as $s) {
@@ -77,7 +82,12 @@ class BotService
         }
         foreach ($bySid as $sid => $list) {
             usort($list, fn ($a, $b) => ($a['seq'] ?? 0) <=> ($b['seq'] ?? 0));
-            $key = "forexbot.bot_seq.{$sid}";
+            // Fix Telegram #3: cursor POR RUN (sid + started_at del run), no por
+            // estrategia. Un RE-ARME crea un run nuevo con seq=0; con el cursor viejo
+            // clavado por sid, sus señales quedaban ≤ cursor y se PERDÍAN en silencio.
+            // Con el started_at en la clave, cada run nace con cursor propio en 0.
+            $started = preg_replace('/[^A-Za-z0-9]/', '', (string) ($runByStrategy[$sid]['started_at'] ?? ''));
+            $key = "forexbot.bot_seq.{$sid}.{$started}";
             $lastSeq = (int) Cache::get($key, 0);
             $maxSeq = $lastSeq;
             foreach ($list as $sig) {
@@ -103,9 +113,18 @@ class BotService
     }
 
     /** Detecta posiciones recién abiertas → Telegram + Journal (con estrategia). */
-    private function syncOpenPositions(array $positions, array $runByStrategy): void
+    private function syncOpenPositions(array $positions, array $runByStrategy, bool $positionsOk = true): void
     {
         $seen = (array) Cache::get('forexbot.bot_open_seen', []);
+        // Fix Telegram #1 (guard no-encoger) + #5: un snapshot SIN posiciones cuando
+        // antes las había huele a hipo de MT5/bridge, no a cierre masivo. Sobrescribir
+        // 'seen' con lista vacía era la CAUSA RAÍZ del replay: al siguiente poll sano
+        // todas las posiciones parecían nuevas y Telegram re-enviaba "Trade abierto"
+        // viejos. En ese ciclo: no escribir, no notificar. (Un cierre masivo real solo
+        // deja 'seen' obsoleto, que es inofensivo: los tickets no se reutilizan.)
+        if (! $positionsOk || (empty($positions) && ! empty($seen))) {
+            return;
+        }
         $current = [];
         foreach ($positions as $p) {
             $ticket = (int) ($p['ticket'] ?? 0);
@@ -113,8 +132,17 @@ class BotService
             if ($ticket && ! in_array($ticket, $seen, true)) {
                 $sid = (int) ($p['strategy_id'] ?? 0);
                 $dir = ($p['type'] ?? 0) === 0 ? 'BUY' : 'SELL';
-                $this->telegram->notify('trade_opened', "Trade abierto: {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}");
-                $this->logEvent($runByStrategy[$sid]['bot_run_id'] ?? null, 'trade_opened', 'info', "Trade abierto {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}", $sid ?: null);
+                // Fix Telegram #2 (descarte de seguridad por edad): una "apertura nueva"
+                // con más de 1h es un replay/carga tardía, no un trade fresco → va al
+                // Journal (auditoría) pero NO a Telegram.
+                $openedAt = (int) ($p['time'] ?? 0);
+                $fresh = $openedAt === 0 || (now()->getTimestamp() - $openedAt) <= 3600;
+                if ($fresh) {
+                    $this->telegram->notify('trade_opened', "Trade abierto: {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}");
+                    $this->logEvent($runByStrategy[$sid]['bot_run_id'] ?? null, 'trade_opened', 'info', "Trade abierto {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']}", $sid ?: null);
+                } else {
+                    $this->logEvent($runByStrategy[$sid]['bot_run_id'] ?? null, 'trade_opened', 'info', "Trade abierto {$dir} {$p['symbol']} {$p['volume']} @ {$p['price_open']} · detectado tarde (sin Telegram)", $sid ?: null);
+                }
             }
         }
         Cache::forever('forexbot.bot_open_seen', $current);
@@ -159,7 +187,9 @@ class BotService
                 $this->logEvent($botRunId, 'trade_closed', $pnl >= 0 ? 'info' : 'warning', "Trade cerrado {$t['symbol']} · PnL " . number_format($pnl, 2) . " · {$reason}", $sid);
             }
         }
-        Cache::forever('forexbot.bot_closed_seen', $seen);
+        // Fix Telegram #4: poda — la lista era append-only y crecía sin límite. Los
+        // closed_trades del bridge son por sesión (~60/run): 500 vistos dan margen de sobra.
+        Cache::forever('forexbot.bot_closed_seen', array_slice($seen, -500));
     }
 
     /** Actualiza cada BotRun (pnl, nº trades, estado) y registra auto-stop/error. */

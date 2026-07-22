@@ -123,6 +123,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/bot/preview', [BotController::class, 'preview'])->name('bot.preview');
     Route::post('/bot/preview', [BotController::class, 'previewSpec'])->name('bot.preview.spec');
     Route::get('/bot/journal', [BotController::class, 'journalPersistent'])->name('bot.journal');
+    Route::get('/bot/closed-trades', [BotController::class, 'closedTrades'])->name('bot.closed-trades');
+    Route::get('/bot/lifetime-pnl', [BotController::class, 'lifetimePnl'])->name('bot.lifetime-pnl');
     Route::get('/bot/health-summary', [BotController::class, 'healthSummary'])->name('bot.health-summary');
     Route::post('/bot/start', [BotController::class, 'start'])->name('bot.start');
     Route::post('/bot/load-favorites', [BotController::class, 'loadFavorites'])->name('bot.load-favorites');
