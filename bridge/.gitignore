@@ -28,3 +28,6 @@ explore_cache.db-shm
 
 # Calendario económico acumulado (runtime, se reconstruye del feed)
 economic_calendar.json
+
+# Journal del bot (runtime; aperturas/cierres que el bridge escribe en vivo)
+bot_journal.jsonl
