@@ -9,7 +9,7 @@ window.Pusher = Pusher;
  *
  * El HOST del WebSocket se deriva de `window.location.hostname`: así el cliente
  * Reverb usa el MISMO host por el que se entró a la web — `localhost` desde la
- * propia tower y `192.168.0.172` (la IP de la tower) desde el iPhone/Mac — sin
+ * propia tower y `<LAN_IP>` (la IP de la tower en la red local) desde el iPhone/Mac — sin
  * tener que hornear una IP fija ni recompilar para cada caso (ver FOREXBOT_RED_LOCAL.md).
  * El puerto (8085) sí se hornea desde VITE_REVERB_PORT.
  */

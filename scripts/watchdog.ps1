@@ -59,7 +59,7 @@ try {
 # positivos por lentitud transitoria de MT5). El estado guarda un contador de fallos. ---
 # State junto al script (NO en $env:TEMP): bajo SYSTEM $env:TEMP es C:\Windows\Temp,
 # ilegible para el usuario. Aqui es fijo, inspectable y lo escriben SYSTEM y el usuario
-# por igual (D:\mtrad hereda Modify para Usuarios autentificados).
+# por igual (la carpeta del proyecto hereda Modify para Usuarios autentificados).
 $stateFile = Join-Path $PSScriptRoot 'watchdog_state.txt'
 $threshold = 2   # 2 fallos seguidos (cada 2 min) => alerta tras ~2-4 min de caida real
 $prevCount = 0

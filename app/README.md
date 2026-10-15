@@ -28,10 +28,14 @@ npm run build                  # o: npm run dev
 php artisan serve --port=8080  # el bridge suele usar el 8000
 ```
 
-### Usuario por defecto (autenticación básica, un solo usuario)
+### Usuario admin (autenticación básica, un solo usuario)
 
-- email: `admin@forexbot.local`  ·  password: `password`
-- Configurable vía `.env`: `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`.
+No hay credenciales por defecto. Antes de `php artisan migrate --seed` (o `db:seed`) define
+en `.env`:
+
+- `ADMIN_EMAIL` y `ADMIN_PASSWORD` (obligatorias; el seeder falla con
+  "Define ADMIN_EMAIL y ADMIN_PASSWORD en .env antes de correr el seeder." si alguna está vacía).
+- `ADMIN_NAME` (opcional, por defecto `ForexBot Admin`).
 
 ### Acceso desde la red local (iPhone / Mac / iPad) — ver `FOREXBOT_RED_LOCAL.md`
 
@@ -48,7 +52,7 @@ cd app && php artisan reverb:start                       # 0.0.0.0:8085
 cd app && php artisan serve --host=0.0.0.0 --port=8090
 ```
 
-Desde otro dispositivo en la **misma WiFi**: `http://192.168.0.172:8090` (IP de la tower;
+Desde otro dispositivo en la **misma WiFi**: `http://<LAN_IP>:8090` (IP de la tower en la red local;
 es DHCP, verifícala con `ipconfig` si cambia). `echo.js` deriva el host del WebSocket de
 `window.location.hostname`, así que el tiempo real funciona igual desde `localhost` (en la
 tower) y desde la IP (desde el iPhone) **sin recompilar**.
@@ -62,7 +66,7 @@ New-NetFirewallRule -DisplayName "ForexBot Laravel" -Direction Inbound -LocalPor
 New-NetFirewallRule -DisplayName "ForexBot Reverb"  -Direction Inbound -LocalPort 8085 -Protocol TCP -Action Allow -Profile Private
 ```
 
-> Seguridad: el bridge (8000) queda en `127.0.0.1` — verificado que `192.168.0.172:8000`
+> Seguridad: el bridge (8000) queda en `127.0.0.1` — verificado que `<LAN_IP>:8000`
 > rechaza la conexión desde la red, mientras `127.0.0.1:8000` (Laravel) sí responde.
 
 ## 3. Base de datos por entorno

@@ -8,7 +8,7 @@
 
 Hacer el dashboard de ForexBot accesible desde otros dispositivos en la misma red WiFi (iPhone, Mac M1, iPad), **manteniendo el bridge Python cerrado** porque ejecuta órdenes de trading reales y no debe ser alcanzable desde la red.
 
-**IP local de la tower (servidor):** `192.168.0.172`
+**IP local de la tower (servidor):** `<LAN_IP>` (la IP privada de la máquina en tu red, p. ej. la que muestra `ipconfig`)
 > Nota: es una IP asignada por DHCP. Puede cambiar si se reinicia el router. Si el acceso deja de funcionar, verificar con `ipconfig`. Para fijarla, reservar la IP en el router o configurar IP estática en Windows (opcional, futuro).
 
 ---
@@ -42,13 +42,13 @@ Documentar este comando como el de uso diario (antes era sin `--host`).
 
 ### 3.2 Reverb
 - `REVERB_SERVER_HOST=0.0.0.0` en `.env` — el servidor Reverb escucha en todas las interfaces (bind).
-- `REVERB_HOST=192.168.0.172` en `.env` — el **cliente** (navegador del iPhone/Mac) debe apuntar a la IP de la tower, NO a `localhost`, o intentará conectarse a sí mismo.
+- `REVERB_HOST=<LAN_IP>` en `.env` — el **cliente** (navegador del iPhone/Mac) debe apuntar a la IP de la tower, NO a `localhost`, o intentará conectarse a sí mismo.
 - `REVERB_PORT=8085` (ya configurado).
 - Recordar: las variables `VITE_*` (incluida `VITE_REVERB_HOST`) se **hornean en el build**. Tras cambiarlas hay que `npm run build`.
 
-> Detalle importante: hay una tensión entre acceso local (desde la tower misma, `localhost`) y acceso remoto (desde iPhone, IP). Si `REVERB_HOST` se fija a la IP, el navegador en la propia tower también deberá usar la IP (`http://192.168.0.172:8090`) en vez de `localhost:8090`, para que el WebSocket apunte correctamente. Considerar usar la IP de forma consistente en todos los accesos, o detectar el host dinámicamente en `echo.js` a partir de `window.location.hostname` (solución más robusta: el cliente Reverb usa el mismo host por el que se entró a la web).
+> Detalle importante: hay una tensión entre acceso local (desde la tower misma, `localhost`) y acceso remoto (desde iPhone, IP). Si `REVERB_HOST` se fija a la IP, el navegador en la propia tower también deberá usar la IP (`http://<LAN_IP>:8090`) en vez de `localhost:8090`, para que el WebSocket apunte correctamente. Considerar usar la IP de forma consistente en todos los accesos, o detectar el host dinámicamente en `echo.js` a partir de `window.location.hostname` (solución más robusta: el cliente Reverb usa el mismo host por el que se entró a la web).
 
-**Recomendación:** en `echo.js`, derivar el host del WebSocket de `window.location.hostname` en lugar de hornear una IP fija. Así funciona tanto desde `localhost` (en la tower) como desde `192.168.0.172` (desde el iPhone) sin recompilar para cada caso.
+**Recomendación:** en `echo.js`, derivar el host del WebSocket de `window.location.hostname` en lugar de hornear una IP fija. Así funciona tanto desde `localhost` (en la tower) como desde `<LAN_IP>` (desde el iPhone) sin recompilar para cada caso.
 
 ### 3.3 Bridge Python
 - **NO cambiar.** Debe permanecer en `127.0.0.1`.
@@ -71,12 +71,12 @@ NO abrir el 8000 (bridge) — debe permanecer cerrado.
 
 ## 5. Cómo Conectarse desde iPhone / Mac
 
-1. El dispositivo debe estar en la **misma red WiFi** que la tower (mismo router, rango `192.168.0.x`).
+1. El dispositivo debe estar en la **misma red WiFi** que la tower (mismo router, misma subred que `<LAN_IP>`).
 2. Abrir el navegador y entrar a:
    ```
-   http://192.168.0.172:8090
+   http://<LAN_IP>:8090
    ```
-3. Login normal: `admin@forexbot.local` / `password`.
+3. Login normal con el usuario admin definido en `ADMIN_EMAIL` / `ADMIN_PASSWORD` del `.env` (lo crea `php artisan db:seed`; no hay credenciales por defecto).
 4. Verificar que el dashboard carga datos y que el tiempo real (posiciones, precios) funciona — eso confirma que el WebSocket de Reverb también conecta.
 
 ---
@@ -87,15 +87,15 @@ NO abrir el 8000 (bridge) — debe permanecer cerrado.
 2. `.env`: `REVERB_SERVER_HOST=0.0.0.0`. Implementar en `echo.js` la derivación del host del cliente desde `window.location.hostname` (preferido sobre hornear la IP). Recompilar.
 3. Bridge: asegurar binding en `127.0.0.1` (cambiar desde `0.0.0.0` si aplica). Verificar que Laravel sigue consumiéndolo bien en localhost.
 4. Documentar el procedimiento de firewall (popup o reglas manuales para 8090 y 8085; nunca 8000).
-5. Verificación: acceder desde otro dispositivo de la red a `http://192.168.0.172:8090`, login correcto, dashboard con datos, y WebSocket conectado (tiempo real funcionando).
+5. Verificación: acceder desde otro dispositivo de la red a `http://<LAN_IP>:8090`, login correcto, dashboard con datos, y WebSocket conectado (tiempo real funcionando).
 
 ---
 
 ## 7. Criterio de Aceptación
 
-- Desde el iPhone/Mac en la misma WiFi: `http://192.168.0.172:8090` carga el login y el dashboard con datos reales de MT5.
+- Desde el iPhone/Mac en la misma WiFi: `http://<LAN_IP>:8090` carga el login y el dashboard con datos reales de MT5.
 - El tiempo real funciona desde el dispositivo externo (precios/posiciones se actualizan sin recargar) → confirma Reverb accesible.
-- Desde otro dispositivo, intentar `http://192.168.0.172:8000` (bridge) **NO** debe responder → confirma que el bridge está cerrado a la red.
+- Desde otro dispositivo, intentar `http://<LAN_IP>:8000` (bridge) **NO** debe responder → confirma que el bridge está cerrado a la red.
 - Desde la propia tower, `http://localhost:8090` sigue funcionando con tiempo real (gracias a la derivación de host en echo.js).
 
 ---

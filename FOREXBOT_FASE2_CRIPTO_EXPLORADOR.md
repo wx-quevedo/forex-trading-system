@@ -1,6 +1,6 @@
 # ForexBot — Subproyecto CRIPTO · Fase 2: modelo de costos + Explorador net/OOS/holdout
 
-**Fecha:** 2026-07-05 · **Continúa:** `FOREXBOT_FASE0_CRIPTO_DIAGNOSTICO.md` (arquitectura y contrato BrokerClient) y la Fase 1 (bridge `D:\cbot` :8001, BybitClient datos públicos, core forkeado byte-idéntico).
+**Fecha:** 2026-07-05 · **Continúa:** `FOREXBOT_FASE0_CRIPTO_DIAGNOSTICO.md` (arquitectura y contrato BrokerClient) y la Fase 1 (bridge `<crypto bridge path>` :8001, BybitClient datos públicos, core forkeado byte-idéntico).
 **Estado: FASE 2 COMPLETA** (2a costos · 2b-i explorador bridge · verificación holdout · 2b-ii routing web · **2b-iii cross-pair ETHUSDT** · **2b-v multi-timeframe** · **2b-vi doble cross-pair SOL + combined**). Cripto sigue siendo **solo lectura** — la ejecución (testnet) es Fase 4.
 
 ---
@@ -176,5 +176,5 @@ frontera entre estructura y ajuste al carácter de un par.**
    paginación lo permite.
 4. Fase 4 (lejana): ejecución testnet (auth firmada HMAC, orderLinkId, netting) — stubs 501 listos.
 
-**Reglas vigentes**: forex (D:\mtrad, :8000) intocable; métricas de decisión SIEMPRE netas;
+**Reglas vigentes**: forex (<project path>, :8000) intocable; métricas de decisión SIEMPRE netas;
 cripto solo demo/testnet cuando llegue la ejecución; commits locales (push manual del usuario).

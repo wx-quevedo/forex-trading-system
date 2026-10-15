@@ -438,7 +438,7 @@ price_alerts
 
 ## 11. Prompt de Inicio para Claude Code
 
-Este es el prompt exacto a pegar en Claude Code al abrir `D:\mtrad` por primera vez. Está diseñado para ser autosuficiente — el agente no necesita instrucciones adicionales.
+Este es el prompt exacto a pegar en Claude Code al abrir `<project path>` por primera vez. Está diseñado para ser autosuficiente — el agente no necesita instrucciones adicionales.
 
 ```
 Lee FOREXBOT_PROJECT.md en la raíz. Es el documento maestro del proyecto,
@@ -455,7 +455,7 @@ Los skills de autoskills.sh guían al agente sobre patrones y mejores prácticas
 de cada tecnología. No omitas este paso.
 
 PASO 2 — Estructura de carpetas
-Crea esta estructura en D:\mtrad:
+Crea esta estructura en <project path>:
   bridge/   ← Python FastAPI + MT5 (Fase 1)
   app/      ← Laravel 12 (Fase 2 en adelante)
 

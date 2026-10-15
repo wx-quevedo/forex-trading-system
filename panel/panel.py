@@ -76,12 +76,16 @@ FONT_SMALL = ("Consolas", 8)
 
 def find_php() -> str | None:
     """Resuelve un php.exe utilizable. Prioriza el que usa el usuario a diario."""
+    # WinGet instala PHP por usuario bajo %LOCALAPPDATA%; fallback si no está definida.
+    local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     candidates = [
         Path(r"C:\php\php.exe"),
-        Path(
-            r"C:\Users\<user>\AppData\Local\Microsoft\WinGet\Packages"
-            r"\PHP.PHP.8.3_Microsoft.Winget.Source_8wekyb3d8bbwe\php.exe"
-        ),
+        Path(local_appdata)
+        / "Microsoft"
+        / "WinGet"
+        / "Packages"
+        / "PHP.PHP.8.3_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        / "php.exe",
     ]
     for c in candidates:
         if c.exists():

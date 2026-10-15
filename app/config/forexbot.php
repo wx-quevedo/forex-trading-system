@@ -20,7 +20,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Python Bybit Bridge — CRIPTO (Fase 2b, D:\cbot puerto 8001)
+    | Python Bybit Bridge — CRIPTO (Fase 2b, bridge cripto separado, puerto 8001)
     |--------------------------------------------------------------------------
     |
     | Bridge SEPARADO del forex (solo datos públicos de Bybit; la ejecución

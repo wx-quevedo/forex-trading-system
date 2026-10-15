@@ -140,6 +140,7 @@ composer install
 npm install
 cp .env.example .env
 php artisan key:generate
+# edit app/.env first (see below): the seeder needs ADMIN_EMAIL and ADMIN_PASSWORD
 php artisan migrate --seed
 npm run build
 ```
@@ -147,6 +148,8 @@ npm run build
 Set the following in `app/.env`:
 
 ```env
+ADMIN_EMAIL=<your_admin_email>
+ADMIN_PASSWORD=<choose_a_strong_password>
 BRIDGE_URL=http://127.0.0.1:8000
 BRIDGE_API_KEY=<same_key_as_bridge>
 ANTHROPIC_API_KEY=<optional>

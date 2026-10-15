@@ -19,7 +19,7 @@ Al construir el mapa, se reportó: *"la caché se recreó con el esquema nuevo; 
    - Revisar el código que crea/abre `explore_cache.db` y la tabla `explore_cache` (y `explore_searches`): debe usar `CREATE TABLE IF NOT EXISTS`, NUNCA `DROP`/recrear si ya existe.
    - Si hubo una migración de esquema (se añadieron columnas para el mapa), la migración debe **preservar los datos** (ALTER TABLE / añadir columnas), no recrear la tabla desde cero.
 
-2. **Ruta del archivo de la DB inestable.** Verificar que `explore_cache.db` se guarde SIEMPRE en la misma ruta absoluta (ej: junto al bridge en `D:\mtrad\bridge\explore_cache.db`), no en un directorio temporal, ni relativa al working directory (que puede cambiar según cómo se arranque el bridge: desde el panel vs manual vs reinicio). Si la ruta cambia entre arranques, "no encuentra" la DB anterior y arranca una nueva vacía.
+2. **Ruta del archivo de la DB inestable.** Verificar que `explore_cache.db` se guarde SIEMPRE en la misma ruta absoluta (ej: junto al bridge en `<project path>\bridge\explore_cache.db`), no en un directorio temporal, ni relativa al working directory (que puede cambiar según cómo se arranque el bridge: desde el panel vs manual vs reinicio). Si la ruta cambia entre arranques, "no encuentra" la DB anterior y arranca una nueva vacía.
 
 3. **La migración del esquema nuevo borró la data una vez** (aceptable la primera vez), pero además dejó el código recreando en cada arranque (no aceptable). Separar: migrar una vez (preservando), y nunca recrear si ya existe.
 

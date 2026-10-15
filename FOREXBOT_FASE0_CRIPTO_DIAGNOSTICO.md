@@ -3,8 +3,8 @@
 **Documento fundacional.** Mapa honesto del acoplamiento a MT5 de la plataforma forex y contrato
 `BrokerClient` para añadir Bybit **sin tocar ni arriesgar** lo que ya funciona en forex.
 
-- **Regla de oro:** el bridge forex (`D:\mtrad\bridge`, MT5) NO se toca. Cripto vive en un **bridge
-  separado** (`D:\cbot`, proceso/puerto propios).
+- **Regla de oro:** el bridge forex (`<project path>\bridge`, MT5) NO se toca. Cripto vive en un **bridge
+  separado** (`<crypto bridge path>`, proceso/puerto propios).
 - **Alcance inicial:** solo **BTC**, **testnet** de Bybit para ejecución, datos históricos de
   **mainnet público**.
 
@@ -15,7 +15,7 @@
 | Decisión | Veredicto |
 |---|---|
 | **Datos mainnet público / ejecución testnet** | ✅ CORRECTO. Klines, tickers e instruments-info de Bybit son **públicos (sin auth)**; place-order/positions/wallet requieren **HMAC firmado**. El split es limpio. |
-| **Bridge separado (`D:\cbot`, puerto propio)** | ✅ CONCUERDO y es lo natural. El bridge ya está escrito contra `client.X` (no contra la lib `mt5`), así que un bridge cripto es "copiar la estructura y cambiar el `client`". Forex intocable. |
+| **Bridge separado (`<crypto bridge path>`, puerto propio)** | ✅ CONCUERDO y es lo natural. El bridge ya está escrito contra `client.X` (no contra la lib `mt5`), así que un bridge cripto es "copiar la estructura y cambiar el `client`". Forex intocable. |
 | **Solo BTC + testnet** | ✅ Bien. Usar **linear USDT perp (BTCUSDT)**: qty en BTC, PnL en USDT — mapea 1:1 al modelo qty/price/PnL de la plataforma (mejor que inverse/coin-margined). |
 
 ---

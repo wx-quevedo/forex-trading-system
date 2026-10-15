@@ -28,7 +28,7 @@ Y muestra un **diagnóstico de solo lectura** leyendo el `/health` del bridge:
 - `psutil`:
 
 ```
-cd D:\mtrad\panel
+cd <project path>\panel
 pip install -r requirements.txt
 ```
 

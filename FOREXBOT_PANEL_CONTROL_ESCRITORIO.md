@@ -20,7 +20,7 @@ El usuario no levanta los servicios manualmente; necesita una herramienta única
 
 - **Python + tkinter** (interfaz gráfica nativa, sin dependencias pesadas; Python ya está instalado por el bridge)
 - Empaquetable como `.exe` con doble clic (PyInstaller) o ejecutable como script `python panel.py`
-- Ubicación sugerida: `D:\mtrad\panel\` (carpeta nueva, separada de bridge/ y app/)
+- Ubicación sugerida: `<project path>\panel\` (carpeta nueva, separada de bridge/ y app/)
 - Estética: limpia, tecnológica/elegante (ver sección 5)
 
 ---
@@ -31,10 +31,10 @@ Cada uno con su fila: nombre, semáforo de estado, y botones [Start] [Stop] [Res
 
 | Servicio | Comando de arranque | Puerto | Detección de estado |
 |---|---|---|---|
-| Bridge Python | `cd D:\mtrad\bridge && venv\Scripts\python.exe run.py` | 8000 | puerto 8000 escuchando + `GET /health` responde |
-| Laravel | `cd D:\mtrad\app && php artisan serve --host=0.0.0.0 --port=8090` | 8090 | puerto 8090 escuchando |
-| Reverb | `cd D:\mtrad\app && php artisan reverb:start` | 8085 | puerto 8085 escuchando |
-| Queue Worker | `cd D:\mtrad\app && php artisan queue:work` | — | proceso vivo (sin puerto; rastrear por PID lanzado) |
+| Bridge Python | `cd <project path>\bridge && venv\Scripts\python.exe run.py` | 8000 | puerto 8000 escuchando + `GET /health` responde |
+| Laravel | `cd <project path>\app && php artisan serve --host=0.0.0.0 --port=8090` | 8090 | puerto 8090 escuchando |
+| Reverb | `cd <project path>\app && php artisan reverb:start` | 8085 | puerto 8085 escuchando |
+| Queue Worker | `cd <project path>\app && php artisan queue:work` | — | proceso vivo (sin puerto; rastrear por PID lanzado) |
 
 ### Mecánica de control
 - **Start:** lanza el comando en un proceso nuevo (oculto o en ventana propia). Guardar el PID para poder detenerlo.
@@ -107,7 +107,7 @@ Estética tecnológica/elegante, coherente con el espíritu dark de la plataform
 
 ## 7. Resumen de Tareas para el Agente
 
-1. Crear `D:\mtrad\panel\` con la app tkinter (`panel.py`)
+1. Crear `<project path>\panel\` con la app tkinter (`panel.py`)
 2. Detección de estado por puerto + health check del bridge (usar `psutil`)
 3. Control Start/Stop/Restart por servicio, rastreando PIDs de procesos lanzados
 4. Sección de diagnóstico de solo lectura (MT5, Algo Trading, mercado) leyendo `/health`
